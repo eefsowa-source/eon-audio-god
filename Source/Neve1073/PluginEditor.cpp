@@ -4,50 +4,24 @@
 Neve1073Editor::Neve1073Editor (Neve1073Processor& p) : AudioProcessorEditor (p), proc (p)
 {
     setLookAndFeel (&lnf);
-    setSize (820, 400);
+    setSize (720, 300);
 
-    auto addKnob = [&] (const juce::String& id, const juce::String& name, int x, int y) {
-        auto s = std::make_unique<juce::Slider>();
-        s->setSliderStyle (juce::Slider::RotaryVerticalDrag);
-        s->setTextBoxStyle (juce::Slider::TextBoxBelow, false, 70, 18);
-        s->setBounds (x, y, 90, 90);
-        addAndMakeVisible (*s);
-        auto l = std::make_unique<juce::Label>();
-        l->setText (name, juce::dontSendNotification);
-        l->setJustificationType (juce::Justification::centred);
-        l->setBounds (x, y + 88, 90, 18);
-        addAndMakeVisible (*l);
-        sliderAtt.push_back (std::make_unique<juce::AudioProcessorValueTreeState::SliderAttachment> (proc.apvts, id, *s));
-        sliders.push_back (std::move (s));
-        labels.push_back (std::move (l));
-    };
-    auto addCombo = [&] (const juce::String& id, int x, int y, int w = 90) {
-        auto c = std::make_unique<juce::ComboBox>();
-        c->setBounds (x, y, w, 24);
-        addAndMakeVisible (*c);
-        comboAtt.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ComboBoxAttachment> (proc.apvts, id, *c));
-        combos.push_back (std::move (c));
-    };
-    auto addToggle = [&] (const juce::String& id, const juce::String& name, int x, int y, int w = 110) {
-        auto t = std::make_unique<juce::ToggleButton> (name);
-        t->setBounds (x, y, w, 24);
-        addAndMakeVisible (*t);
-        buttonAtt.push_back (std::make_unique<juce::AudioProcessorValueTreeState::ButtonAttachment> (proc.apvts, id, *t));
-        toggles.push_back (std::move (t));
-    };
+    // band row: freq combo (captioned) above each gain knob
+    eonui::addCombo  (*this, proc.apvts, cs, "lowFreq",  "LOW FREQ",   40, 62);
+    eonui::addKnob   (*this, proc.apvts, cs, "lowGain",  "LOW",    40, 92);
+    eonui::addCombo  (*this, proc.apvts, cs, "midFreq",  "MID FREQ",  150, 62);
+    eonui::addKnob   (*this, proc.apvts, cs, "midGain",  "MID",    150, 92);
+    eonui::addKnob   (*this, proc.apvts, cs, "midQ",     "MID Q",  260, 92);
+    eonui::addCombo  (*this, proc.apvts, cs, "highFreq", "HIGH FREQ", 370, 62);
+    eonui::addKnob   (*this, proc.apvts, cs, "highGain", "HIGH",   370, 92);
+    eonui::addKnob   (*this, proc.apvts, cs, "drive",    "DRIVE",  480, 92);
+    eonui::addKnob   (*this, proc.apvts, cs, "output",   "OUTPUT", 590, 92);
 
-    // band row: freq combo above each gain knob
-    addCombo ("lowFreq", 30, 60);  addKnob ("lowGain",  "LOW",   30, 90);
-    addCombo ("midFreq", 160, 60); addKnob ("midGain",  "MID",  160, 90);
-                                   addKnob ("midQ",     "MID Q", 270, 90);
-    addCombo ("highFreq", 380, 60); addKnob ("highGain", "HIGH", 380, 90);
-    addCombo ("hpf", 510, 60, 100);
-    addKnob ("drive",  "DRIVE",  510, 90);
-    addKnob ("output", "OUTPUT", 640, 90);
-
-    addCombo ("quality", 30, 220, 130);
-    addToggle ("analog",  "Analog", 180, 220);
-    addToggle ("adaptive", "Adaptive CPU", 300, 220, 140);
+    // bottom row: utility controls
+    eonui::addCombo  (*this, proc.apvts, cs, "hpf",     "HPF",      40, 238, 100);
+    eonui::addCombo  (*this, proc.apvts, cs, "quality", "QUALITY",  170, 238, 140);
+    eonui::addToggle (*this, proc.apvts, cs, "analog",   "Analog",      340, 238);
+    eonui::addToggle (*this, proc.apvts, cs, "adaptive", "Adaptive CPU", 460, 238, 140);
 }
 
 Neve1073Editor::~Neve1073Editor() { setLookAndFeel (nullptr); }
@@ -60,7 +34,8 @@ void Neve1073Editor::paint (juce::Graphics& g)
     g.setColour (juce::Colours::white);
     g.setFont (juce::Font (juce::FontOptions (22.f, juce::Font::bold)));
     g.drawText ("EON AUDIO  |  1073 GOD", 20, 8, 400, 24, juce::Justification::left);
-    g.setFont (juce::Font (juce::FontOptions (12.f)));
+    g.setFont (juce::Font (juce::FontOptions (11.f)));
     g.setColour (juce::Colours::white.withAlpha (0.5f));
-    g.drawText ("JILES-ATHERTON • KOREN NR TRIODE • ADAA2 • 8/16/32x", 20, 32, 500, 12, juce::Justification::left);
+    g.drawText ("JILES-ATHERTON  |  KOREN NR TRIODE  |  ADAA2  |  8/16/32x",
+                20, 32, 500, 14, juce::Justification::left);
 }

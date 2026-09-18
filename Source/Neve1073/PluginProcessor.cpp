@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "PluginEditor.h"
+#include "ParamFormat.h"
 
 Neve1073Processor::Neve1073Processor()
     : AudioProcessor (BusesProperties()
@@ -19,26 +20,33 @@ Neve1073Processor::Neve1073Processor()
 juce::AudioProcessorValueTreeState::ParameterLayout Neve1073Processor::createLayout()
 {
     std::vector<std::unique_ptr<juce::RangedAudioParameter>> p;
+    const auto db = juce::AudioParameterFloatAttributes()
+                        .withLabel ("dB").withStringFromValueFunction (eonparam::fmt (1, " dB"));
+    const auto q  = juce::AudioParameterFloatAttributes()
+                        .withStringFromValueFunction (eonparam::fmt (2));
+    const auto dr = juce::AudioParameterFloatAttributes()
+                        .withStringFromValueFunction (eonparam::fmt (1));
+
     p.push_back (std::make_unique<juce::AudioParameterChoice> ("lowFreq",  "Low Freq",
         juce::StringArray { "35", "60", "110", "220" }, 1));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("lowGain",  "Low Gain",
-        juce::NormalisableRange<float> (-24.f, 24.f), 0.f));
+        juce::NormalisableRange<float> (-24.f, 24.f), 0.f, db));
     p.push_back (std::make_unique<juce::AudioParameterChoice> ("midFreq",  "Mid Freq",
         juce::StringArray { "360", "700", "1600", "3200", "4800", "7200" }, 2));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("midGain",  "Mid Gain",
-        juce::NormalisableRange<float> (-24.f, 24.f), 0.f));
+        juce::NormalisableRange<float> (-24.f, 24.f), 0.f, db));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("midQ",     "Mid Q",
-        juce::NormalisableRange<float> (0.3f, 5.f), 1.6f));
+        juce::NormalisableRange<float> (0.3f, 5.f), 1.6f, q));
     p.push_back (std::make_unique<juce::AudioParameterChoice> ("highFreq", "High Freq",
         juce::StringArray { "10k", "12k", "16k" }, 1));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("highGain", "High Gain",
-        juce::NormalisableRange<float> (-24.f, 24.f), 0.f));
+        juce::NormalisableRange<float> (-24.f, 24.f), 0.f, db));
     p.push_back (std::make_unique<juce::AudioParameterChoice> ("hpf",      "HPF",
         juce::StringArray { "Off", "50", "80", "160", "300" }, 0));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("output",   "Output",
-        juce::NormalisableRange<float> (-24.f, 24.f), 0.f));
+        juce::NormalisableRange<float> (-24.f, 24.f), 0.f, db));
     p.push_back (std::make_unique<juce::AudioParameterFloat>  ("drive",    "Drive",
-        juce::NormalisableRange<float> (0.f, 10.f), 3.5f));
+        juce::NormalisableRange<float> (0.f, 10.f), 3.5f, dr));
     p.push_back (std::make_unique<juce::AudioParameterBool>   ("analog",   "Analog", true));
     p.push_back (std::make_unique<juce::AudioParameterChoice> ("quality",  "Quality",
         juce::StringArray { "Eco 8x", "Liquid 16x", "GOD 32x", "GOD+ NR 32x" }, 2));

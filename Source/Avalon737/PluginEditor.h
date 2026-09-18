@@ -1,6 +1,7 @@
 #pragma once
 #include <JuceHeader.h>
 #include "EonLookAndFeel.h"
+#include "EonEditorUtils.h"
 
 class Avalon737Processor;
 
@@ -15,14 +16,7 @@ public:
 private:
     Avalon737Processor& proc;
     EonLookAndFeel lnf;
-
-    std::vector<std::unique_ptr<juce::Slider>> sliders;
-    std::vector<std::unique_ptr<juce::Label>> labels;
-    std::vector<std::unique_ptr<juce::ComboBox>> combos;
-    std::vector<std::unique_ptr<juce::ToggleButton>> toggles;
-    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::SliderAttachment>> sliderAtt;
-    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ComboBoxAttachment>> comboAtt;
-    std::vector<std::unique_ptr<juce::AudioProcessorValueTreeState::ButtonAttachment>> buttonAtt;
+    eonui::ControlSet cs;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Avalon737Editor)
 };

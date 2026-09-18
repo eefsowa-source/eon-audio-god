@@ -75,14 +75,14 @@ int main()
         const float resid = std::abs ((t.Bplus - t.Vq) / t.Rload - Ip);
         CHECK (resid < 1e-4, "triode Newton residual ~0 at quiescent point");
         // sweep: plate voltage decreases as grid goes positive (inverting)
-        float prev = 1e9f; bool mono = true;
+        float prev = -1e9f; bool mono = true; // -inf so the first sample can't "drop"
         for (float x = -1.f; x <= 1.f; x += 0.1f)
         {
             const float y = t.process (x);
-            if (y < prev - 1e-4f) { /* output should INCREASE with x (we return Vq-Vp) */ }
-            if (y < prev - 1.f) mono = false; // allow noise-free strict rise
+            if (y < prev - 1e-3f) mono = false; // output should rise with x (we return Vq-Vp)
             prev = y;
         }
+        CHECK (mono, "triode output monotonic-ish over input sweep");
         CHECK (prev > 0.f, "triode output rises with positive grid drive");
         // output at x=0 should be ~0
         t.reset();
@@ -91,6 +91,40 @@ int main()
         // bounded on extreme input
         const float yh = t.process (3.f);
         CHECK (std::isfinite (yh) && std::abs (yh) < 5.f, "triode bounded on extreme input");
+    }
+
+    // ---- TriodeStage optional cathode sag (Rk||Ck self-bias) ----
+    {
+        // unconfigured = grounded cathode, identical to a second default stage
+        eon::TriodeStage a, b; a.iterations = 4; a.reset(); b.iterations = 4; b.reset();
+        double maxDiff = 0;
+        for (int i = 0; i < 5000; ++i)
+        {
+            const float x = 0.5f * std::sin (2.0 * M_PI * i / 300.0);
+            maxDiff = std::max (maxDiff, (double) std::abs (a.process (x) - b.process (x)));
+        }
+        CHECK (maxDiff == 0.0 && b.cathodeVk == 0.0, "cathode off: bit-identical, Vk stays 0");
+
+        // enabled: reset() seeds the quiescent self-bias point
+        eon::TriodeStage t; t.iterations = 4;
+        t.setCathode (1500.f, 25e-6f, 48000.0 * 32);
+        t.reset();
+        CHECK (t.cathodeVk > 0.0 && t.cathodeVk < 5.0, "cathode settles to sane quiescent Vk");
+
+        // sustained drive -> Vk builds -> gain sags (program-dependent feel)
+        double early = 0, late = 0;
+        for (int i = 0; i < 200000; ++i)
+        {
+            const float y = t.process (0.8f * std::sin (2.0 * M_PI * i / 300.0));
+            if (i < 20000)        early += std::abs (y);
+            else if (i >= 180000) late  += std::abs (y);
+        }
+        CHECK (late < early, "cathode sag reduces gain over sustained drive");
+
+        // bounded on extreme input, state stays finite
+        for (int i = 0; i < 50000; ++i) t.process (3.f);
+        CHECK (std::isfinite (t.cathodeVk) && t.cathodeVk < 10.0, "cathode Vk bounded on extreme input");
+        CHECK (std::isfinite (t.process (1.f)), "triode output finite after extreme drive");
     }
 
     // ---- Jiles-Atherton: bounded, hysteretic, returns to loop ----
@@ -158,6 +192,7 @@ int main()
         double mx = 0, sum = 0;
         for (int i = 0; i < 100000; ++i) { const float y = air.process(); mx = std::max (mx, (double) std::abs (y)); sum += y; }
         CHECK (mx > 0 && mx < 0.01, "air noise nonzero but ~-80dB or less");
+        CHECK (std::abs (sum / 100000) < mx, "air noise mean smaller than peak");
     }
 
     std::printf ("\n%d failure(s)\n", failures);

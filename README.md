@@ -39,18 +39,40 @@ Artifacts land in `build/<name>_artefacts/Release/` and are also copied to
 ## Verify
 
 ```bash
-c++ -std=c++20 -O2 -I Source/Shared Docs/dsp_smoke_test.cpp -o /tmp/dsp_test && /tmp/dsp_test
+ctest --test-dir build --output-on-failure          # DSP smoke test via CMake
+./scripts/run_pluginval.sh                          # pluginval on built VST3+AU
 ```
 
-17 checks over the pure-DSP headers (no JUCE needed): ADAA correctness,
-Newton residual, JA boundedness/hysteresis, bounded drift, DC rejection.
+19 checks over the pure-DSP headers (no JUCE needed): ADAA correctness,
+Newton residual/monotonicity, JA boundedness/hysteresis, bounded drift,
+DC rejection. The test binary builds as `dsp_smoke_test` whenever
+`EON_BUILD_TESTS=ON` (default).
+
+Sanitizer run (ASan + UBSan, Clang/GCC; ASan-only on MSVC):
+
+```bash
+cmake -B build-san -DEON_ENABLE_SANITIZERS=ON -DCMAKE_BUILD_TYPE=Debug
+cmake --build build-san --target dsp_smoke_test && ./build-san/dsp_smoke_test
+```
+
+Measurement dump (EQ magnitude curves + nonlinear-chain THD -> CSV):
+
+```bash
+cmake --build build --target eq_response_dump
+./build/eq_response_dump measurements   # eq_curves.csv + thd.csv
+```
 
 ## Layout
 
 ```
-Source/Shared/Dsp/   Adaa.h Triode.h Transformer.h Stages.h   (pure DSP, no JUCE dsp)
+eon_dsp/Dsp/         Adaa.h Triode.h Transformer.h Stages.h Rng.h
+                     (pure-DSP core, no JUCE — vendored snapshot of the
+                      shared EON eon_dsp library; sibling EON projects can
+                      build against the canonical copy via -DEON_DSP_DIR=...)
 Source/Shared/       Quality.h (oversampling manager) EonLookAndFeel.h
+                     EonEditorUtils.h (APVTS-bound controls) ParamFormat.h
 Source/Neve1073/     plugin processor + editor
 Source/Avalon737/    plugin processor + editor
 Docs/REVIEW.md       findings on the original draft
+scripts/             run_pluginval.sh
 ```
