@@ -15,6 +15,9 @@ Neve1073Processor::Neve1073Processor()
     outTrans[0].setTolerance (t1 * 0.985f);
     outTrans[1].setTolerance (t2 * 1.015f);
     inductor[0].setTolerance (t1); inductor[1].setTolerance (t2);
+    // voicing: input transformer stays a light always-on color, output iron takes the heat
+    for (auto& t : inTrans)  t.drive = 0.05f;
+    for (auto& t : outTrans) t.drive = 1.4f;
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout Neve1073Processor::createLayout()
@@ -159,7 +162,7 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     const int numCh = (int) std::min (osBlock.getNumChannels(), (size_t) 2);
     const int N = (int) osBlock.getNumSamples();
     const bool useTriode = osm.useTriode();
-    const float indDrive = 1.f + std::abs (mg) * 0.26f + driveSm.getCurrentValue() * 0.10f;
+    const float indDrive = 0.5f + std::abs (mg) * 0.26f + driveSm.getCurrentValue() * 0.10f;
 
     // consume the drive ramp once per block — shared by every channel
     auto drives = std::vector<float> ((size_t) N);
@@ -173,7 +176,7 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             for (int i = 0; i < N; ++i)
             {
                 const float drive = drives[i];
-                float x = d[i] * (1.f + drive * 0.20f);
+                float x = d[i] * (1.f + drive * 0.50f);
 
                 x = inTrans[ch].process (x);                    // JA input transformer
                 if (hpIdx != 0) x = highPass[ch].processSample (x);
@@ -183,9 +186,9 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
                 x = midPeak[ch].processSample (x);
 
                 if (useTriode)
-                    x = triode[ch].process (x * 0.45f) * 0.9f + x * 0.35f;
+                    x = triode[ch].process (x * 0.15f) * 0.9f + x * 0.35f;
                 else
-                    x = clip[ch].process (x * 0.7f) * 1.2f + x * 0.25f;
+                    x = clip[ch].process (x * 0.35f) * 1.2f + x * 0.25f;
 
                 x = highShelf[ch].processSample (x);
                 x = outTrans[ch].process (x * 0.88f);           // JA output transformer
