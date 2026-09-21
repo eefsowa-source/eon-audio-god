@@ -1,0 +1,300 @@
+#include <JuceHeader.h>
+
+#include <algorithm>
+#include <cmath>
+#include <cstddef>
+#include <cstdlib>
+#include <iostream>
+#include <limits>
+#include <memory>
+#include <new>
+#include <string>
+#include <vector>
+
+namespace
+{
+thread_local bool countAllocations = false;
+thread_local std::size_t allocationCount = 0;
+
+void countAllocation()
+{
+    if (countAllocations)
+        ++allocationCount;
+}
+
+void* allocate(std::size_t size) noexcept
+{
+    auto* result = std::malloc (size == 0 ? 1 : size);
+    if (result != nullptr)
+        countAllocation();
+    return result;
+}
+
+void* allocateAligned(std::size_t size, std::size_t alignment) noexcept
+{
+    if (alignment < sizeof (void*))
+        alignment = sizeof (void*);
+
+    void* result = nullptr;
+    if (posix_memalign (&result, alignment, size == 0 ? 1 : size) != 0)
+        return nullptr;
+
+    countAllocation();
+    return result;
+}
+
+void* allocateOrThrow(std::size_t size)
+{
+    if (auto* result = allocate (size))
+        return result;
+    throw std::bad_alloc();
+}
+
+void* allocateAlignedOrThrow(std::size_t size, std::size_t alignment)
+{
+    if (auto* result = allocateAligned (size, alignment))
+        return result;
+    throw std::bad_alloc();
+}
+} // namespace
+
+void* operator new (std::size_t size) { return allocateOrThrow (size); }
+void* operator new[] (std::size_t size) { return allocateOrThrow (size); }
+void* operator new (std::size_t size, const std::nothrow_t&) noexcept { return allocate (size); }
+void* operator new[] (std::size_t size, const std::nothrow_t&) noexcept { return allocate (size); }
+
+void* operator new (std::size_t size, std::align_val_t alignment)
+{
+    return allocateAlignedOrThrow (size, static_cast<std::size_t> (alignment));
+}
+
+void* operator new[] (std::size_t size, std::align_val_t alignment)
+{
+    return allocateAlignedOrThrow (size, static_cast<std::size_t> (alignment));
+}
+
+void* operator new (std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    return allocateAligned (size, static_cast<std::size_t> (alignment));
+}
+
+void* operator new[] (std::size_t size, std::align_val_t alignment, const std::nothrow_t&) noexcept
+{
+    return allocateAligned (size, static_cast<std::size_t> (alignment));
+}
+
+void operator delete (void* pointer) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer) noexcept { std::free (pointer); }
+void operator delete (void* pointer, std::size_t) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer, std::size_t) noexcept { std::free (pointer); }
+void operator delete (void* pointer, const std::nothrow_t&) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer, const std::nothrow_t&) noexcept { std::free (pointer); }
+void operator delete (void* pointer, std::align_val_t) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer, std::align_val_t) noexcept { std::free (pointer); }
+void operator delete (void* pointer, std::size_t, std::align_val_t) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer, std::size_t, std::align_val_t) noexcept { std::free (pointer); }
+void operator delete (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { std::free (pointer); }
+void operator delete[] (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { std::free (pointer); }
+
+#if EON_PROCESSOR_KIND == 1073
+#include "Neve1073/PluginProcessor.h"
+using Processor = Neve1073Processor;
+constexpr const char* productName = "Neve1073";
+#elif EON_PROCESSOR_KIND == 737
+#include "Avalon737/PluginProcessor.h"
+using Processor = Avalon737Processor;
+constexpr const char* productName = "Avalon737";
+#else
+#error "EON_PROCESSOR_KIND must identify a supported processor"
+#endif
+
+namespace
+{
+constexpr double sampleRate = 48000.0;
+constexpr int blockSize = 256;
+constexpr int renderSamples = 16384;
+constexpr float twoPi = 6.2831853071795864769f;
+
+struct Checks
+{
+    int failures = 0;
+
+    void check (bool condition, const std::string& message)
+    {
+        if (! condition)
+        {
+            ++failures;
+            std::cerr << productName << " FAIL: " << message << '\n';
+        }
+    }
+};
+
+void setParameter (Processor& processor, const char* parameterID, float value, Checks& checks)
+{
+    auto* parameter = dynamic_cast<juce::RangedAudioParameter*> (
+        processor.apvts.getParameter (parameterID));
+    checks.check (parameter != nullptr, std::string ("missing parameter ") + parameterID);
+    if (parameter != nullptr)
+        parameter->setValueNotifyingHost (parameter->convertTo0to1 (value));
+}
+
+struct RenderedAudio
+{
+    std::vector<float> left;
+    std::vector<float> right;
+};
+
+RenderedAudio renderRightOnly (float lowGain, Checks& checks)
+{
+    Processor processor;
+    setParameter (processor, "adaptive", 1.0f, checks);
+    setParameter (processor, "analog", 0.0f, checks);
+    setParameter (processor, "quality", 0.0f, checks);
+    setParameter (processor, "lowGain", lowGain, checks);
+
+    processor.setRateAndBufferSizeDetails (sampleRate, blockSize);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    RenderedAudio rendered;
+    rendered.left.reserve (renderSamples);
+    rendered.right.reserve (renderSamples);
+
+    for (int offset = 0; offset < renderSamples; offset += blockSize)
+    {
+        buffer.clear();
+        auto* right = buffer.getWritePointer (1);
+        for (int i = 0; i < blockSize; ++i)
+            right[i] = 0.1f * std::sin (twoPi * 60.0f * static_cast<float> (offset + i) / static_cast<float> (sampleRate));
+
+        processor.processBlock (buffer, midi);
+        for (int i = 0; i < blockSize; ++i)
+        {
+            rendered.left.push_back (buffer.getSample (0, i));
+            rendered.right.push_back (buffer.getSample (1, i));
+        }
+    }
+
+    processor.releaseResources();
+    return rendered;
+}
+
+float rmsDifferenceAfterWarmup (const std::vector<float>& first,
+                                const std::vector<float>& second,
+                                std::size_t firstSample)
+{
+    const auto count = std::min (first.size(), second.size());
+    if (count <= firstSample)
+        return 0.0f;
+
+    double sumSquares = 0.0;
+    for (std::size_t i = firstSample; i < count; ++i)
+    {
+        const auto difference = static_cast<double> (first[i]) - static_cast<double> (second[i]);
+        sumSquares += difference * difference;
+    }
+    return static_cast<float> (std::sqrt (sumSquares / static_cast<double> (count - firstSample)));
+}
+
+void testRightOnlyAdaptivePath (Checks& checks)
+{
+    const auto flat = renderRightOnly (0.0f, checks);
+    const auto boosted = renderRightOnly (24.0f, checks);
+
+    checks.check (flat.left.size() == renderSamples && flat.right.size() == renderSamples,
+                  "flat render has unexpected length");
+    checks.check (boosted.left.size() == renderSamples && boosted.right.size() == renderSamples,
+                  "boosted render has unexpected length");
+
+    float leftPeak = 0.0f;
+    bool outputFinite = true;
+    for (std::size_t i = 0; i < flat.left.size(); ++i)
+    {
+        leftPeak = std::max (leftPeak, std::abs (flat.left[i]));
+        outputFinite = outputFinite
+                    && std::isfinite (flat.left[i])
+                    && std::isfinite (flat.right[i])
+                    && std::isfinite (boosted.left[i])
+                    && std::isfinite (boosted.right[i]);
+    }
+
+    for (const auto sample : boosted.left)
+        leftPeak = std::max (leftPeak, std::abs (sample));
+
+    checks.check (leftPeak <= 1.0e-7f, "right-only input produced non-silent left output");
+    checks.check (outputFinite, "right-only output contains a non-finite sample");
+
+    const auto difference = rmsDifferenceAfterWarmup (flat.right, boosted.right, 4096);
+    std::cout << productName << " adaptive right-only RMS difference after 4096 samples: "
+              << difference << '\n';
+    checks.check (difference > 1.0e-4f,
+                  "right-only adaptive processing did not respond to lowGain");
+}
+
+void fillStereoSine (juce::AudioBuffer<float>& buffer)
+{
+    for (int i = 0; i < buffer.getNumSamples(); ++i)
+    {
+        const auto value = 0.1f * std::sin (twoPi * 1000.0f * static_cast<float> (i) / static_cast<float> (sampleRate));
+        buffer.setSample (0, i, value);
+        buffer.setSample (1, i, value);
+    }
+}
+
+void testSteadyCallbackAllocations (Checks& checks)
+{
+    Processor processor;
+    setParameter (processor, "adaptive", 0.0f, checks);
+    setParameter (processor, "analog", 0.0f, checks);
+    setParameter (processor, "quality", 2.0f, checks);
+
+    processor.setRateAndBufferSizeDetails (sampleRate, blockSize);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    fillStereoSine (buffer);
+    juce::MidiBuffer midi;
+
+    // The first call applies the initial quality mode. Warm several unchanged
+    // callbacks before enabling the thread-local allocation counter.
+    processor.processBlock (buffer, midi);
+    for (int i = 0; i < 4; ++i)
+        processor.processBlock (buffer, midi);
+
+    allocationCount = 0;
+    countAllocations = true;
+    try
+    {
+        processor.processBlock (buffer, midi);
+    }
+    catch (...)
+    {
+        countAllocations = false;
+        checks.check (false, "steady processBlock threw an exception");
+        return;
+    }
+    countAllocations = false;
+
+    std::cout << productName << " steady processBlock C++ heap allocations: "
+              << allocationCount << '\n';
+    checks.check (allocationCount == 0,
+                  "steady processBlock performed C++ heap allocation(s)");
+}
+} // namespace
+
+int main()
+{
+    juce::ScopedJuceInitialiser_GUI juceInitialiser;
+    Checks checks;
+
+    std::cout << productName << " processor integration tests\n";
+    testRightOnlyAdaptivePath (checks);
+    testSteadyCallbackAllocations (checks);
+
+    if (checks.failures != 0)
+        std::cerr << productName << " failures: " << checks.failures << '\n';
+    else
+        std::cout << productName << " all checks passed\n";
+    return checks.failures == 0 ? 0 : 1;
+}

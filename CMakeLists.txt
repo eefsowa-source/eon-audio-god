@@ -135,6 +135,38 @@ if(EON_BUILD_TESTS)
     add_test(NAME dsp_smoke COMMAND dsp_smoke_test)
 
     if(EON_BUILD_PLUGINS)
+        function(add_processor_tests test_target processor kind)
+            get_target_property(processor_juce_code ${processor} JUCE_GENERATED_SOURCES_DIRECTORY)
+            if(NOT processor_juce_code)
+                message(FATAL_ERROR "${processor} does not expose a generated JUCE source directory")
+            endif()
+
+            add_executable(${test_target} Tests/ProcessorTest.cpp)
+            target_include_directories(${test_target} PRIVATE
+                "${CMAKE_CURRENT_SOURCE_DIR}/Source"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Source/Shared"
+                "${CMAKE_CURRENT_SOURCE_DIR}/Source/${processor}"
+                "${processor_juce_code}"
+            )
+            target_link_libraries(${test_target} PRIVATE
+                ${processor}
+                eon::dsp
+                juce::juce_audio_utils
+                juce::juce_dsp
+                juce::juce_audio_processors
+            )
+            target_compile_definitions(${test_target} PRIVATE
+                EON_PROCESSOR_KIND=${kind}
+                EON_PROCESSOR_TESTING=1
+                JUCE_WEB_BROWSER=0
+                JUCE_USE_CURL=0
+            )
+            add_test(NAME ${test_target} COMMAND ${test_target})
+        endfunction()
+
+        add_processor_tests(neve_processor_tests Neve1073 1073)
+        add_processor_tests(avalon_processor_tests Avalon737 737)
+
         # Offline measurement dumper (EQ curves + THD -> CSV). Not a ctest —
         # run manually: ./build/eq_response_dump measurements
         add_executable(eq_response_dump Docs/eq_response_dump.cpp)
