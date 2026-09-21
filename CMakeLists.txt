@@ -99,4 +99,13 @@ if(EON_BUILD_TESTS)
     if(NOT MSVC)
         target_compile_options(eq_response_dump PRIVATE -O2)
     endif()
+
+    # Alias-foldback measurement (JUCE vs eon oversampler vs 1x). Not a
+    # ctest — run manually: ./build/alias_dump measurements
+    add_executable(alias_dump Docs/alias_dump.cpp)
+    target_include_directories(alias_dump PRIVATE ${EON_DSP_DIR})
+    target_link_libraries(alias_dump PRIVATE juce::juce_dsp)
+    if(NOT MSVC)
+        target_compile_options(alias_dump PRIVATE -O2)
+    endif()
 endif()
