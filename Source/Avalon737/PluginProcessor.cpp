@@ -63,6 +63,7 @@ bool Avalon737Processor::isBusesLayoutSupported (const BusesLayout& layouts) con
 void Avalon737Processor::prepareToPlay (double sr, int sb)
 {
     osm.prepare ((size_t) sb);
+    driveScratch.resize (static_cast<size_t> (sb) * 32u);
     osm.setMode ((eon::QualityMode) (int) apvts.getRawParameterValue ("quality")->load());
     lastQuality = -1;
 
@@ -135,19 +136,22 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const double osRate = osm.rate (getSampleRate());
 
     {
-        const auto pc = Coeff::makeHighPass   (osRate, hpF[hpIdx]);
-        const auto lc = Coeff::makeLowShelf   (osRate, lowF[lfIdx], 0.68f, juce::Decibels::decibelsToGain (lg));
-        const auto lmc = Coeff::makePeakFilter (osRate, lmf, 2.6f, juce::Decibels::decibelsToGain (lmg));
-        const auto hmc = Coeff::makePeakFilter (osRate, hmf, 2.6f, juce::Decibels::decibelsToGain (hmg));
-        const auto hc = Coeff::makeHighShelf  (osRate, highF[hfIdx], 0.60f, juce::Decibels::decibelsToGain (hg));
-        for (auto& f : highPass)  f.coefficients = pc;
-        for (auto& f : lowShelf)  f.coefficients = lc;
-        for (auto& f : lowMid)    f.coefficients = lmc;
-        for (auto& f : highMid)   f.coefficients = hmc;
-        for (auto& f : highShelf) f.coefficients = hc;
+        using ArrayCoeff = juce::dsp::IIR::ArrayCoefficients<float>;
+        const auto pc = ArrayCoeff::makeHighPass   (osRate, hpF[hpIdx]);
+        const auto lc = ArrayCoeff::makeLowShelf   (osRate, lowF[lfIdx], 0.68f, juce::Decibels::decibelsToGain (lg));
+        const auto lmc = ArrayCoeff::makePeakFilter (osRate, lmf, 2.6f, juce::Decibels::decibelsToGain (lmg));
+        const auto hmc = ArrayCoeff::makePeakFilter (osRate, hmf, 2.6f, juce::Decibels::decibelsToGain (hmg));
+        const auto hc = ArrayCoeff::makeHighShelf  (osRate, highF[hfIdx], 0.60f, juce::Decibels::decibelsToGain (hg));
+        for (auto& f : highPass)  *f.coefficients = pc;
+        for (auto& f : lowShelf)  *f.coefficients = lc;
+        for (auto& f : lowMid)    *f.coefficients = lmc;
+        for (auto& f : highMid)   *f.coefficients = hmc;
+        for (auto& f : highShelf) *f.coefficients = hc;
     }
 
-    const float blockRMS = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    float blockRMS = 0.0f;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        blockRMS = std::max (blockRMS, buffer.getRMSLevel (ch, 0, buffer.getNumSamples()));
     silentEnv = silentEnv * 0.9 + blockRMS * 0.1;
     const bool skipNonlinear = adaptiveOn && silentEnv < 1e-6;
 
@@ -160,17 +164,23 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const bool godPlus = qIdx == 3;
     const bool air32k = hfIdx == 3 && hg > 0.05f;
 
-    auto drives = std::vector<float> ((size_t) N);
-    for (int i = 0; i < N; ++i) drives[i] = driveSm.getNextValue();
+    jassert (static_cast<size_t> (N) <= driveScratch.size());
+    for (int i = 0; i < N; ++i) driveScratch[static_cast<size_t> (i)] = driveSm.getNextValue();
 
     if (! skipNonlinear)
     {
         for (int ch = 0; ch < numCh; ++ch)
         {
+            // Keep independent silent channels silent while another channel
+            // drives the adaptive path. Class-A drift is intentionally active
+            // during nonlinear processing, so do not wake it for zero input.
+            if (buffer.getRMSLevel (ch, 0, buffer.getNumSamples()) == 0.0f)
+                continue;
+
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < N; ++i)
             {
-                float x = d[i] * (1.f + drives[i] * 0.11f);
+                float x = d[i] * (1.f + driveScratch[static_cast<size_t> (i)] * 0.11f);
 
                 x = tanh[ch].process (x * 0.46f) * 2.17f;
                 x = classA[ch].process (x);                 // Class-A + DA memory + sag/thermal

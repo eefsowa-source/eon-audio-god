@@ -42,7 +42,6 @@ private:
     int lastQuality = -1;
 
     using Filter = juce::dsp::IIR::Filter<float>;
-    using Coeff  = juce::dsp::IIR::Coefficients<float>;
     Filter highPass[2], lowShelf[2], lowMid[2], highMid[2], highShelf[2];
 
     eon::ClassAStage   classA[2], meltA[2];   // main Class-A path + 32k melt path
@@ -53,6 +52,7 @@ private:
     eon::AnalogAir     air[2];
 
     juce::SmoothedValue<float> driveSm, outGainSm;
+    std::vector<float> driveScratch;
     double silentEnv = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Avalon737Processor)
