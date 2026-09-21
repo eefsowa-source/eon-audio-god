@@ -65,7 +65,7 @@ struct HbTaps35
         -2.6899266591e-04,  1.7121717578e-05 };
 };
 
-// One 2x stage. The same even-tap array drives both directions.
+// One 2x stage. Each instance owns delay history for one processing direction.
 template <typename Taps>
 struct HalfBand2x
 {
@@ -133,17 +133,27 @@ struct Oversampler
     HalfBand2x<HbTaps35> s2;
     int stages = 2;                        // default 4x
     std::vector<float> tmp, tmp2;          // ping-pong scratch for mid rates
+    HalfBand2x<HbTaps71> down0;
+    HalfBand2x<HbTaps47> down1;
+    HalfBand2x<HbTaps35> down2;
 
     void setStages (int s) { stages = std::clamp (s, 1, 3); }
     int  factor() const { return 1 << stages; }
 
     void prepare (int maxBlock)
     {
-        s0.init(); s1.init(); s2.init();
+        s0.init(); down0.init();
+        s1.init(); down1.init();
+        s2.init(); down2.init();
         tmp.assign  ((size_t) maxBlock * 8u + 8u, 0.0f);
         tmp2.assign ((size_t) maxBlock * 8u + 8u, 0.0f);
     }
-    void reset() { s0.reset(); s1.reset(); s2.reset(); }
+    void reset()
+    {
+        s0.reset(); down0.reset();
+        s1.reset(); down1.reset();
+        s2.reset(); down2.reset();
+    }
 
     // in[n] -> out[n * factor()]; `out` must hold n * factor() floats and
     // must NOT alias `in`.
@@ -182,7 +192,7 @@ struct Oversampler
         if (stages == 1)
         {
             for (int i = 0; i < n; ++i)
-                out[i] = (float) s0.down (in[2 * i], in[2 * i + 1]);
+                out[i] = (float) down0.down (in[2 * i], in[2 * i + 1]);
             return;
         }
         // downsample highest stage first: stage (stages-1) ... stage 0
@@ -196,9 +206,9 @@ struct Oversampler
     {
         for (int i = 0; i < n; ++i)
         {
-            const double y = stage == 0 ? s0.down (in[2 * i], in[2 * i + 1])
-                           : stage == 1 ? s1.down (in[2 * i], in[2 * i + 1])
-                                        : s2.down (in[2 * i], in[2 * i + 1]);
+            const double y = stage == 0 ? down0.down (in[2 * i], in[2 * i + 1])
+                           : stage == 1 ? down1.down (in[2 * i], in[2 * i + 1])
+                                        : down2.down (in[2 * i], in[2 * i + 1]);
             out[i] = (float) y;
         }
     }
