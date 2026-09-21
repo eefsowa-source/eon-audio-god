@@ -161,6 +161,15 @@ if(EON_BUILD_TESTS)
                 JUCE_WEB_BROWSER=0
                 JUCE_USE_CURL=0
             )
+            if(EON_ENABLE_SANITIZERS)
+                if(MSVC)
+                    target_compile_options(${test_target} PRIVATE /fsanitize=address)
+                    target_link_options(${test_target} PRIVATE /fsanitize=address)
+                else()
+                    target_compile_options(${test_target} PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer)
+                    target_link_options(${test_target} PRIVATE -fsanitize=address,undefined)
+                endif()
+            endif()
             add_test(NAME ${test_target} COMMAND ${test_target})
         endfunction()
 

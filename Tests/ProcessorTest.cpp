@@ -164,9 +164,8 @@ struct RenderedAudio
     std::vector<float> right;
 };
 
-RenderedAudio renderRightOnly (float lowGain, Checks& checks)
+RenderedAudio renderRightOnly (Processor& processor, float lowGain, Checks& checks)
 {
-    Processor processor;
     setParameter (processor, "adaptive", 1.0f, checks);
     setParameter (processor, "analog", 0.0f, checks);
     setParameter (processor, "quality", 0.0f, checks);
@@ -219,8 +218,9 @@ float rmsDifferenceAfterWarmup (const std::vector<float>& first,
 
 void testRightOnlyAdaptivePath (Checks& checks)
 {
-    const auto flat = renderRightOnly (0.0f, checks);
-    const auto boosted = renderRightOnly (24.0f, checks);
+    Processor processor;
+    const auto flat = renderRightOnly (processor, 0.0f, checks);
+    const auto boosted = renderRightOnly (processor, 24.0f, checks);
 
     checks.check (flat.left.size() == renderSamples && flat.right.size() == renderSamples,
                   "flat render has unexpected length");
