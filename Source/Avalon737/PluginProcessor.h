@@ -5,6 +5,8 @@
 #include "Dsp/Stages.h"
 #include "Quality.h"
 
+struct ProcessorTestAccess;
+
 class Avalon737Processor : public juce::AudioProcessor,
                            private juce::AsyncUpdater
 {
@@ -35,6 +37,8 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    friend struct ProcessorTestAccess;
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void handleAsyncUpdate() override;
 

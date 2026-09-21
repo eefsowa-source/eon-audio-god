@@ -68,6 +68,12 @@ void Avalon737Processor::prepareToPlay (double sr, int sb)
     lastQuality = -1;
 
     juce::dsp::ProcessSpec spec { osm.rate (sr), (juce::uint32) sb * 32, 2 };
+    const std::array<float, 6> secondOrderIdentity { 1.f, 0.f, 0.f, 1.f, 0.f, 0.f };
+    for (auto& f : highPass)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowShelf)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowMid)    *f.coefficients = secondOrderIdentity;
+    for (auto& f : highMid)   *f.coefficients = secondOrderIdentity;
+    for (auto& f : highShelf) *f.coefficients = secondOrderIdentity;
     for (auto& f : highPass)  f.prepare (spec);
     for (auto& f : lowShelf)  f.prepare (spec);
     for (auto& f : lowMid)    f.prepare (spec);
@@ -164,6 +170,10 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const bool godPlus = qIdx == 3;
     const bool air32k = hfIdx == 3 && hg > 0.05f;
 
+    bool sourceSilent[2] { true, true };
+    for (int ch = 0; ch < std::min (buffer.getNumChannels(), 2); ++ch)
+        sourceSilent[ch] = buffer.getRMSLevel (ch, 0, buffer.getNumSamples()) == 0.0f;
+
     jassert (static_cast<size_t> (N) <= driveScratch.size());
     for (int i = 0; i < N; ++i) driveScratch[static_cast<size_t> (i)] = driveSm.getNextValue();
 
@@ -171,12 +181,6 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     {
         for (int ch = 0; ch < numCh; ++ch)
         {
-            // Keep independent silent channels silent while another channel
-            // drives the adaptive path. Class-A drift is intentionally active
-            // during nonlinear processing, so do not wake it for zero input.
-            if (buffer.getRMSLevel (ch, 0, buffer.getNumSamples()) == 0.0f)
-                continue;
-
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < N; ++i)
             {
@@ -217,6 +221,10 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     osm.current().processSamplesDown (block);
     outGainSm.applyGain (buffer, buffer.getNumSamples());
+
+    for (int ch = 0; ch < numCh; ++ch)
+        if (sourceSilent[ch])
+            buffer.clear (ch, 0, buffer.getNumSamples());
 }
 
 void Avalon737Processor::getStateInformation (juce::MemoryBlock& dest)

@@ -72,6 +72,11 @@ void Neve1073Processor::prepareToPlay (double sr, int sb)
     lastQuality = -1; // force coefficient rebuild on first block
 
     juce::dsp::ProcessSpec spec { osm.rate (sr), (juce::uint32) sb * 32, 2 };
+    const std::array<float, 6> secondOrderIdentity { 1.f, 0.f, 0.f, 1.f, 0.f, 0.f };
+    for (auto& f : highPass)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowShelf)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : midPeak)   *f.coefficients = secondOrderIdentity;
+    for (auto& f : highShelf) *f.coefficients = secondOrderIdentity;
     for (auto& f : highPass)  f.prepare (spec);
     for (auto& f : lowShelf)  f.prepare (spec);
     for (auto& f : midPeak)   f.prepare (spec);
@@ -151,11 +156,6 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
         if (hpIdx > 0)
         {
             const auto pc = ArrayCoeff::makeHighPass (osRate, hpfF[hpIdx]);
-            for (auto& f : highPass) *f.coefficients = pc;
-        }
-        else
-        {
-            const auto pc = ArrayCoeff::makeFirstOrderHighPass (osRate, 4.f);
             for (auto& f : highPass) *f.coefficients = pc;
         }
     }

@@ -128,6 +128,53 @@ constexpr const char* productName = "Avalon737";
 #error "EON_PROCESSOR_KIND must identify a supported processor"
 #endif
 
+struct ProcessorTestAccess
+{
+#if EON_PROCESSOR_KIND == 1073
+    static bool allIIRFiltersAreSecondOrder (const Neve1073Processor& processor)
+    {
+        for (const auto& filter : processor.highPass)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.lowShelf)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.midPeak)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.highShelf)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        return true;
+    }
+#elif EON_PROCESSOR_KIND == 737
+    static bool allIIRFiltersAreSecondOrder (const Avalon737Processor& processor)
+    {
+        for (const auto& filter : processor.highPass)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.lowShelf)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.lowMid)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.highMid)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        for (const auto& filter : processor.highShelf)
+            if (filter.coefficients->getFilterOrder() != 2)
+                return false;
+        return true;
+    }
+
+    static double classACap1 (const Avalon737Processor& processor)
+    {
+        return processor.classA[0].cap1;
+    }
+#endif
+};
+
 namespace
 {
 constexpr double sampleRate = 48000.0;
@@ -262,6 +309,56 @@ void fillStereoSine (juce::AudioBuffer<float>& buffer)
     }
 }
 
+void testPreparedFilterOrders (Checks& checks)
+{
+    Processor processor;
+    setParameter (processor, "quality", 2.0f, checks);
+    processor.setRateAndBufferSizeDetails (sampleRate, blockSize);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    checks.check (ProcessorTestAccess::allIIRFiltersAreSecondOrder (processor),
+                  "prepareToPlay left callback-updated IIR filter at first-order storage");
+}
+
+#if EON_PROCESSOR_KIND == 737
+void testSilentChannelStateProgress (Checks& checks)
+{
+    Processor processor;
+    setParameter (processor, "adaptive", 0.0f, checks);
+    setParameter (processor, "analog", 0.0f, checks);
+    setParameter (processor, "quality", 0.0f, checks);
+
+    processor.setRateAndBufferSizeDetails (sampleRate, blockSize);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 8; ++block)
+    {
+        fillStereoSine (buffer);
+        processor.processBlock (buffer, midi);
+    }
+
+    const auto stateBeforeSilentLeft = ProcessorTestAccess::classACap1 (processor);
+    buffer.clear();
+    auto* right = buffer.getWritePointer (1);
+    for (int i = 0; i < blockSize; ++i)
+        right[i] = 0.1f * std::sin (twoPi * 60.0f * static_cast<float> (i) / static_cast<float> (sampleRate));
+
+    processor.processBlock (buffer, midi);
+
+    const auto stateAfterSilentLeft = ProcessorTestAccess::classACap1 (processor);
+    float leftPeak = 0.0f;
+    for (int i = 0; i < blockSize; ++i)
+        leftPeak = std::max (leftPeak, std::abs (buffer.getSample (0, i)));
+
+    checks.check (std::abs (stateAfterSilentLeft - stateBeforeSilentLeft) > 1.0e-12,
+                  "silent Avalon channel state did not progress while the other channel was active");
+    checks.check (leftPeak <= 1.0e-7f,
+                  "silent Avalon channel was not forced silent at the output");
+}
+#endif
+
 void testSteadyCallbackAllocations (Checks& checks)
 {
     Processor processor;
@@ -276,9 +373,28 @@ void testSteadyCallbackAllocations (Checks& checks)
     fillStereoSine (buffer);
     juce::MidiBuffer midi;
 
-    // The first call applies the initial quality mode. Warm several unchanged
-    // callbacks before enabling the thread-local allocation counter.
-    processor.processBlock (buffer, midi);
+    // The first call applies the initial quality mode, so it must be covered
+    // separately from the steady-state callback contract.
+    allocationCount = 0;
+    countAllocations = true;
+    try
+    {
+        processor.processBlock (buffer, midi);
+    }
+    catch (...)
+    {
+        countAllocations = false;
+        checks.check (false, "first processBlock threw an exception");
+        return;
+    }
+    countAllocations = false;
+
+    std::cout << productName << " first processBlock C++ heap allocations: "
+              << allocationCount << '\n';
+    checks.check (allocationCount == 0,
+                  "first processBlock performed C++ heap allocation(s)");
+
+    // Warm several unchanged callbacks before checking steady state.
     for (int i = 0; i < 4; ++i)
         processor.processBlock (buffer, midi);
 
@@ -309,7 +425,11 @@ int main()
     Checks checks;
 
     std::cout << productName << " processor integration tests\n";
+    testPreparedFilterOrders (checks);
     testRightOnlyAdaptivePath (checks);
+#if EON_PROCESSOR_KIND == 737
+    testSilentChannelStateProgress (checks);
+#endif
     testSteadyCallbackAllocations (checks);
 
     if (checks.failures != 0)
