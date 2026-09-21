@@ -34,6 +34,11 @@ for header in $required_headers; do
         exit 1
     fi
 done
+if ! object_type=$(git -C "$source_root" cat-file -t "$source_head:NOTES.md" 2>/dev/null) ||
+   [ "$object_type" != blob ]; then
+    echo "error: required source HEAD blob is missing: NOTES.md" >&2
+    exit 1
+fi
 
 destination="$repo_root/eon_dsp"
 transaction_dir=$(mktemp -d "$repo_root/.eon_dsp.sync.XXXXXX")
@@ -78,21 +83,21 @@ cleanup()
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
+if [ -L "$destination" ]; then
+    echo "error: destination must not be a symlink: $destination" >&2
+    exit 1
+fi
 if [ -e "$destination" ] && [ ! -d "$destination" ]; then
     echo "error: destination exists but is not a directory: $destination" >&2
     exit 1
 fi
 
-if [ -d "$destination" ]; then
-    cp -pR "$destination" "$transaction_dir/"
-else
-    mkdir -p "$stage_dir/Dsp"
-fi
 mkdir -p "$stage_dir/Dsp"
 
 for header in $required_headers; do
     git -C "$source_root" cat-file blob "$source_head:Dsp/$header" > "$stage_dir/Dsp/$header"
 done
+git -C "$source_root" cat-file blob "$source_head:NOTES.md" > "$stage_dir/NOTES.md"
 printf '%s\n' "$source_head" > "$stage_dir/REVISION"
 
 if [ -d "$destination" ]; then
