@@ -11,6 +11,10 @@
 #include <string>
 #include <vector>
 
+#if defined (_MSC_VER)
+#include <malloc.h>
+#endif
+
 namespace
 {
 thread_local bool countAllocations = false;
@@ -35,12 +39,28 @@ void* allocateAligned(std::size_t size, std::size_t alignment) noexcept
     if (alignment < sizeof (void*))
         alignment = sizeof (void*);
 
+#if defined (_MSC_VER)
+    auto* result = _aligned_malloc (size == 0 ? 1 : size, alignment);
+    if (result != nullptr)
+        countAllocation();
+    return result;
+#else
     void* result = nullptr;
     if (posix_memalign (&result, alignment, size == 0 ? 1 : size) != 0)
         return nullptr;
 
     countAllocation();
     return result;
+#endif
+}
+
+void deallocateAligned (void* pointer) noexcept
+{
+#if defined (_MSC_VER)
+    _aligned_free (pointer);
+#else
+    std::free (pointer);
+#endif
 }
 
 void* allocateOrThrow(std::size_t size)
@@ -89,12 +109,12 @@ void operator delete (void* pointer, std::size_t) noexcept { std::free (pointer)
 void operator delete[] (void* pointer, std::size_t) noexcept { std::free (pointer); }
 void operator delete (void* pointer, const std::nothrow_t&) noexcept { std::free (pointer); }
 void operator delete[] (void* pointer, const std::nothrow_t&) noexcept { std::free (pointer); }
-void operator delete (void* pointer, std::align_val_t) noexcept { std::free (pointer); }
-void operator delete[] (void* pointer, std::align_val_t) noexcept { std::free (pointer); }
-void operator delete (void* pointer, std::size_t, std::align_val_t) noexcept { std::free (pointer); }
-void operator delete[] (void* pointer, std::size_t, std::align_val_t) noexcept { std::free (pointer); }
-void operator delete (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { std::free (pointer); }
-void operator delete[] (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { std::free (pointer); }
+void operator delete (void* pointer, std::align_val_t) noexcept { deallocateAligned (pointer); }
+void operator delete[] (void* pointer, std::align_val_t) noexcept { deallocateAligned (pointer); }
+void operator delete (void* pointer, std::size_t, std::align_val_t) noexcept { deallocateAligned (pointer); }
+void operator delete[] (void* pointer, std::size_t, std::align_val_t) noexcept { deallocateAligned (pointer); }
+void operator delete (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { deallocateAligned (pointer); }
+void operator delete[] (void* pointer, std::align_val_t, const std::nothrow_t&) noexcept { deallocateAligned (pointer); }
 
 #if EON_PROCESSOR_KIND == 1073
 #include "Neve1073/PluginProcessor.h"
