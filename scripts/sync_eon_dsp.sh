@@ -27,43 +27,77 @@ fi
 
 required_headers="Adaa.h Measure.h Oversampling.h Rng.h RtGuard.h Solvers.h Stages.h Transformer.h Triode.h Wdf.h Zdf.h"
 for header in $required_headers; do
-    source_header="$source_root/Dsp/$header"
-    if ! git -C "$source_root" ls-files --error-unmatch "Dsp/$header" >/dev/null 2>&1 ||
-       [ ! -f "$source_header" ] || [ ! -r "$source_header" ]; then
-        echo "error: required tracked source header is missing or unreadable: Dsp/$header" >&2
-        exit 1
-    fi
-    if ! git -C "$source_root" diff --quiet "$source_head" -- "Dsp/$header"; then
-        echo "error: source header differs from recorded HEAD $source_head: Dsp/$header" >&2
+    object_spec="$source_head:Dsp/$header"
+    if ! object_type=$(git -C "$source_root" cat-file -t "$object_spec" 2>/dev/null) ||
+       [ "$object_type" != blob ]; then
+        echo "error: required source HEAD blob is missing: Dsp/$header" >&2
         exit 1
     fi
 done
 
 destination="$repo_root/eon_dsp"
-mkdir -p "$destination/Dsp"
-stage_dir=$(mktemp -d "$destination/.sync.XXXXXX")
+transaction_dir=$(mktemp -d "$repo_root/.eon_dsp.sync.XXXXXX")
+stage_dir="$transaction_dir/eon_dsp"
+backup_dir="$transaction_dir/backup"
+restore_failed=0
 
 cleanup()
 {
-    for header in $required_headers REVISION; do
-        if [ -f "$stage_dir/$header" ]; then
-            rm "$stage_dir/$header"
+    exit_code=$?
+    trap - 0 HUP INT TERM
+    trap '' HUP INT TERM
+
+    if [ -d "$backup_dir" ]; then
+        if [ ! -e "$destination" ]; then
+            if mv "$backup_dir" "$destination"; then
+                backup_dir=
+            else
+                echo "error: could not restore the previous DSP snapshot from $backup_dir" >&2
+                restore_failed=1
+                exit_code=1
+            fi
+        elif ! rm -rf "$backup_dir"; then
+            echo "error: could not remove the previous DSP snapshot at $backup_dir" >&2
+            restore_failed=1
+            exit_code=1
         fi
-    done
-    rmdir "$stage_dir" 2>/dev/null || :
+    fi
+
+    if [ "$restore_failed" -eq 0 ] && [ -d "$transaction_dir" ]; then
+        if ! rm -rf "$transaction_dir"; then
+            echo "error: could not remove sync staging directory $transaction_dir" >&2
+            exit_code=1
+        fi
+    elif [ "$restore_failed" -ne 0 ]; then
+        echo "recovery data retained at $transaction_dir" >&2
+    fi
+
+    exit "$exit_code"
 }
 
 trap cleanup 0
 trap 'exit 1' HUP INT TERM
 
+if [ -e "$destination" ] && [ ! -d "$destination" ]; then
+    echo "error: destination exists but is not a directory: $destination" >&2
+    exit 1
+fi
+
+if [ -d "$destination" ]; then
+    cp -pR "$destination" "$transaction_dir/"
+else
+    mkdir -p "$stage_dir/Dsp"
+fi
+mkdir -p "$stage_dir/Dsp"
+
 for header in $required_headers; do
-    cp "$source_root/Dsp/$header" "$stage_dir/$header"
+    git -C "$source_root" cat-file blob "$source_head:Dsp/$header" > "$stage_dir/Dsp/$header"
 done
 printf '%s\n' "$source_head" > "$stage_dir/REVISION"
 
-for header in $required_headers; do
-    mv "$stage_dir/$header" "$destination/Dsp/$header"
-done
-mv "$stage_dir/REVISION" "$destination/REVISION"
+if [ -d "$destination" ]; then
+    mv "$destination" "$backup_dir"
+fi
+mv "$stage_dir" "$destination"
 
 printf 'Synced eon_dsp headers from %s at %s\n' "$source_root" "$source_head"
