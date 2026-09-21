@@ -393,6 +393,8 @@ void testSteadyCallbackAllocations (Checks& checks)
               << allocationCount << '\n';
     checks.check (allocationCount == 0,
                   "first processBlock performed C++ heap allocation(s)");
+    checks.check (ProcessorTestAccess::allIIRFiltersAreSecondOrder (processor),
+                  "first processBlock changed callback-updated IIR filter to first-order storage");
 
     // Warm several unchanged callbacks before checking steady state.
     for (int i = 0; i < 4; ++i)
