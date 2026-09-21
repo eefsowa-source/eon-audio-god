@@ -51,7 +51,7 @@ private:
     eon::ClassAStage   classA[2], meltA[2];   // main Class-A path + 32k melt path
     eon::TriodeStage   triode[2];
     eon::SoftClipSat   clip[2];
-    eon::TanhSat       tanh[2];
+    eon::TanhSat       inputTanh[2], interstageTanh[2], airTanh[2];
     eon::DCBlocker     dc[2];
     eon::AnalogAir     air[2];
 

@@ -84,7 +84,9 @@ void Avalon737Processor::prepareToPlay (double sr, int sb)
     for (auto& a : meltA)  a.reset();
     for (auto& t : triode) { t.iterations = osm.triodeIterations(); t.reset(); }
     for (auto& c : clip)   c.reset();
-    for (auto& a : tanh)   a.reset();
+    for (auto& a : inputTanh)      a.reset();
+    for (auto& a : interstageTanh) a.reset();
+    for (auto& a : airTanh)       a.reset();
     for (auto& d : dc)     d.reset();
     for (auto& a : air)    a.reset();
 
@@ -186,7 +188,7 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             {
                 float x = d[i] * (1.f + driveScratch[static_cast<size_t> (i)] * 0.11f);
 
-                x = tanh[ch].process (x * 0.46f) * 2.17f;
+                x = inputTanh[ch].process (x * 0.46f) * 2.17f;
                 x = classA[ch].process (x);                 // Class-A + DA memory + sag/thermal
                 if (hpIdx != 0) x = highPass[ch].processSample (x);
 
@@ -198,7 +200,7 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 if (godPlus)
                     x = triode[ch].process (x * 0.14f) * 6.4f + x * 0.08f;
                 else
-                    x = tanh[ch].process (x * 0.09f) * 10.1f + x * 0.08f;
+                    x = interstageTanh[ch].process (x * 0.09f) * 10.1f + x * 0.08f;
 
                 x = highMid[ch].processSample (x);
                 x = highShelf[ch].processSample (x);
@@ -206,7 +208,7 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 if (air32k)
                 {
                     // 32k "liquid air": separate Class-A melt path
-                    float melt = tanh[ch].process (x * (0.78f + hg * 0.03f));
+                    float melt = airTanh[ch].process (x * (0.78f + hg * 0.03f));
                     melt = meltA[ch].process (melt * 0.55f) * 1.8f;
                     if (godPlus) melt = triode[ch].process (melt * 0.35f) * 1.2f + melt * 0.4f;
                     x = melt * 0.88f + x * 0.12f;

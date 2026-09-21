@@ -172,6 +172,26 @@ struct ProcessorTestAccess
     {
         return processor.classA[0].cap1;
     }
+
+    static double tanhState (const Avalon737Processor& processor, int stage, int channel)
+    {
+        switch (stage)
+        {
+            case 0: return processor.inputTanh[channel].adaa.x1;
+            case 1: return processor.interstageTanh[channel].adaa.x1;
+            default: return processor.airTanh[channel].adaa.x1;
+        }
+    }
+
+    static void resetTanhStage (Avalon737Processor& processor, int stage, int channel)
+    {
+        switch (stage)
+        {
+            case 0: processor.inputTanh[channel].reset(); break;
+            case 1: processor.interstageTanh[channel].reset(); break;
+            default: processor.airTanh[channel].reset(); break;
+        }
+    }
 #endif
 };
 
@@ -357,6 +377,81 @@ void testSilentChannelStateProgress (Checks& checks)
     checks.check (leftPeak <= 1.0e-7f,
                   "silent Avalon channel was not forced silent at the output");
 }
+
+void testTanhStagesHaveIndependentState (Checks& checks)
+{
+    Processor processor;
+    setParameter (processor, "adaptive", 0.0f, checks);
+    setParameter (processor, "analog", 0.0f, checks);
+    setParameter (processor, "quality", 0.0f, checks);
+    setParameter (processor, "highFreq", 3.0f, checks);
+    setParameter (processor, "highGain", 12.0f, checks);
+
+    processor.setRateAndBufferSizeDetails (sampleRate, blockSize);
+    processor.prepareToPlay (sampleRate, blockSize);
+
+    for (int stage = 0; stage < 3; ++stage)
+        checks.check (std::abs (ProcessorTestAccess::tanhState (processor, stage, 0)) < 1.0e-15,
+                      "prepareToPlay did not reset every Avalon TanhSat stage");
+
+    juce::AudioBuffer<float> buffer (2, blockSize);
+    juce::MidiBuffer midi;
+    for (int block = 0; block < 8; ++block)
+    {
+        fillStereoSine (buffer);
+        processor.processBlock (buffer, midi);
+    }
+
+    double before[3] {};
+    for (int stage = 0; stage < 3; ++stage)
+    {
+        before[stage] = ProcessorTestAccess::tanhState (processor, stage, 0);
+        checks.check (std::abs (before[stage]) > 1.0e-12,
+                      "Avalon TanhSat stage did not advance during processing");
+    }
+
+    ProcessorTestAccess::resetTanhStage (processor, 0, 0);
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 0, 0)) < 1.0e-15,
+                  "input TanhSat reset did not clear its own state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 1, 0) - before[1]) < 1.0e-15,
+                  "input TanhSat reset changed interstage TanhSat state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 2, 0) - before[2]) < 1.0e-15,
+                  "input TanhSat reset changed air TanhSat state");
+
+    processor.prepareToPlay (sampleRate, blockSize);
+    for (int block = 0; block < 8; ++block)
+    {
+        fillStereoSine (buffer);
+        processor.processBlock (buffer, midi);
+    }
+
+    for (int stage = 0; stage < 3; ++stage)
+        before[stage] = ProcessorTestAccess::tanhState (processor, stage, 0);
+    ProcessorTestAccess::resetTanhStage (processor, 1, 0);
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 1, 0)) < 1.0e-15,
+                  "interstage TanhSat reset did not clear its own state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 0, 0) - before[0]) < 1.0e-15,
+                  "interstage TanhSat reset changed input TanhSat state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 2, 0) - before[2]) < 1.0e-15,
+                  "interstage TanhSat reset changed air TanhSat state");
+
+    processor.prepareToPlay (sampleRate, blockSize);
+    for (int block = 0; block < 8; ++block)
+    {
+        fillStereoSine (buffer);
+        processor.processBlock (buffer, midi);
+    }
+
+    for (int stage = 0; stage < 3; ++stage)
+        before[stage] = ProcessorTestAccess::tanhState (processor, stage, 0);
+    ProcessorTestAccess::resetTanhStage (processor, 2, 0);
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 2, 0)) < 1.0e-15,
+                  "air TanhSat reset did not clear its own state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 0, 0) - before[0]) < 1.0e-15,
+                  "air TanhSat reset changed input TanhSat state");
+    checks.check (std::abs (ProcessorTestAccess::tanhState (processor, 1, 0) - before[1]) < 1.0e-15,
+                  "air TanhSat reset changed interstage TanhSat state");
+}
 #endif
 
 void testSteadyCallbackAllocations (Checks& checks)
@@ -431,6 +526,7 @@ int main()
     testRightOnlyAdaptivePath (checks);
 #if EON_PROCESSOR_KIND == 737
     testSilentChannelStateProgress (checks);
+    testTanhStagesHaveIndependentState (checks);
 #endif
     testSteadyCallbackAllocations (checks);
 
