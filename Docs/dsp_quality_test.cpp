@@ -99,6 +99,24 @@ struct RmsMeter
     double rms() const { return count > 0 ? std::sqrt (sumSq / (double) count) : 0.0; }
 };
 
+// Goertzel magnitude of a single frequency — exact for frequencies that are not
+// FFT-bin aligned, which matters because 15 kHz/48 kHz is not a bin centre.
+double goertzel (const std::vector<float>& data, double freq, double rate)
+{
+    const double w = 2.0 * juce::MathConstants<double>::pi * freq / rate;
+    const double cw = 2.0 * std::cos (w);
+    double s1 = 0.0, s2 = 0.0;
+    for (float v : data)
+    {
+        const double s0 = (double) v + cw * s1 - s2;
+        s2 = s1;
+        s1 = s0;
+    }
+    const double n = (double) data.size();
+    const double power = s1 * s1 + s2 * s2 - cw * s1 * s2;
+    return 2.0 / n * std::sqrt (std::max (0.0, power));
+}
+
 struct Runner
 {
     enum class Routing { Both, RightOnly };
@@ -291,6 +309,127 @@ void testQualityModeBassConsistency (const char* name)
 }
 
 // ---------------------------------------------------------------------------
+// 7. Alias rejection — the property oversampling exists to deliver.
+//
+// A 15 kHz sine at a 48 kHz base rate puts every harmonic above base Nyquist,
+// so all in-band distortion measured after downsampling is aliased foldback:
+// h2 -> 18k, h3 -> 3k, h4 -> 12k, h5 -> 21k, h6 -> 6k, h7/h9 -> 9k. The
+// assertion is in two parts:
+//
+//   a) an absolute floor on the alias energy, and
+//   b) strictly better rejection at 32x than at 8x — which is what fails if the
+//      quality selector ever stops actually changing the oversampling factor
+//      (the original draft advertised 32x while running 4x).
+//
+// The 5 kHz sanity bin has no k*15k product landing on it, so it must sit far
+// below the fundamental; otherwise the measurement is reading noise.
+//
+// Measured 2026-09-26 at 48 kHz, 2.0 amplitude, drive 10. Ranges over four
+// consecutive runs (component tolerances are randomised per instance, so the
+// floor moves a few dB between runs); 32x sanity bin in brackets:
+//   Neve1073  8x -59.1..-62.4 dB, 16x -86.3..-88.4 dB, 32x -85.5..-87.7 dB (-88.6 dB)
+//   Avalon737 8x -84.1..-84.2 dB, 16x -95.2..-98.0 dB, 32x -95.5..-103.3 dB (-93.8 dB)
+//
+// Two consequences for the assertions:
+//
+//  * The chain is NOT required to be monotonic step by step. Once the alias
+//    floor reaches the numerical floor (~-88 dB, i.e. the sanity bin) further
+//    oversampling cannot be measured — the Neve's 16x -> 32x step sits there and
+//    moves by a couple of dB either way. What is asserted is the 8x -> 32x span,
+//    which carries 16-28 dB of real signal.
+//  * The 8x floor must be measurably above the sanity bin, otherwise even the
+//    worst mode is floor-limited and the test proves nothing. The tightest
+//    observed margin is the Avalon at ~9.7 dB.
+// ---------------------------------------------------------------------------
+struct AliasResult
+{
+    double fundamental = 0.0;
+    double aliasDb = 0.0;
+    double sanityDb = 0.0;
+};
+
+template <typename Processor>
+AliasResult measureAlias (int qualityIndex)
+{
+    Processor proc;
+    proc.setPlayConfigDetails (2, 2, 48000.0, 512);
+    setParam (proc.apvts, "quality", (float) qualityIndex);
+    proc.prepareToPlay (48000.0, 512);
+    neutralise (proc.apvts);
+    setParam (proc.apvts, "quality", (float) qualityIndex);
+    setParam (proc.apvts, "drive", 10.0f);
+
+    Runner runner (proc, 512);
+    runner.sine.prepare (15000.0, 48000.0);
+    // Hot, worst-case stimulus: the point of the gate is to exercise the
+    // nonlinearities, and a signal that stays in the linear region would make
+    // the measurement pass without testing anything. Matches the level
+    // Docs/alias_dump.cpp uses.
+    runner.sine.amp = 2.0f;
+
+    runner.run (16, Runner::Routing::Both);         // let latency and tails settle
+
+    constexpr int capture = 32768;
+    std::vector<float> out;
+    out.reserve ((size_t) capture);
+    while ((int) out.size() < capture)
+    {
+        runner.run (1, Runner::Routing::Both);
+        const float* d = runner.buffer.getReadPointer (0);
+        for (int i = 0; i < runner.buffer.getNumSamples() && (int) out.size() < capture; ++i)
+            out.push_back (d[i]);
+    }
+
+    static constexpr double aliasBins[6] { 3000.0, 6000.0, 9000.0, 12000.0, 18000.0, 21000.0 };
+
+    AliasResult r;
+    r.fundamental = goertzel (out, 15000.0, 48000.0);
+    double aliasPower = 0.0;
+    for (double bin : aliasBins)
+    {
+        const double m = goertzel (out, bin, 48000.0);
+        aliasPower += m * m;
+    }
+    const double sanity = goertzel (out, 5000.0, 48000.0);
+    if (r.fundamental > 0.0)
+    {
+        r.aliasDb  = 20.0 * std::log10 (std::sqrt (aliasPower) / r.fundamental);
+        r.sanityDb = 20.0 * std::log10 (std::max (sanity, 1e-30) / r.fundamental);
+    }
+    return r;
+}
+
+template <typename Processor>
+void testAliasRejection (const char* name)
+{
+    const AliasResult eco = measureAlias<Processor> (0);   // 8x
+    const AliasResult liq = measureAlias<Processor> (1);   // 16x
+    const AliasResult god = measureAlias<Processor> (2);   // 32x
+
+    std::printf ("      %s alias floor rel. fundamental: 8x %.1f dB, 16x %.1f dB, 32x %.1f dB "
+                 "(sanity %.1f dB)\n",
+                 name, eco.aliasDb, liq.aliasDb, god.aliasDb, god.sanityDb);
+
+    char message[256];
+
+    std::snprintf (message, sizeof (message),
+                   "%s: alias floor at least 40 dB below the fundamental in every mode", name);
+    check (eco.aliasDb < -40.0 && liq.aliasDb < -40.0 && god.aliasDb < -40.0, message);
+
+    std::snprintf (message, sizeof (message),
+                   "%s: 32x rejects at least 6 dB more alias than 8x", name);
+    check (god.aliasDb <= eco.aliasDb - 6.0, message);
+
+    std::snprintf (message, sizeof (message),
+                   "%s: 5 kHz sanity bin sits at least 40 dB below the fundamental", name);
+    check (god.sanityDb < -40.0, message);
+
+    std::snprintf (message, sizeof (message),
+                   "%s: 8x alias floor is above the measurement floor, so the test has headroom", name);
+    check (eco.aliasDb > god.sanityDb + 5.0, message);
+}
+
+// ---------------------------------------------------------------------------
 // 5. Extreme settings stay finite, and the reported latency/tail are sane.
 // ---------------------------------------------------------------------------
 template <typename Processor>
@@ -373,6 +512,7 @@ int main()
     testQualityModeBassConsistency<Neve1073Processor> ("Neve1073");
     testRobustness<Neve1073Processor> ("Neve1073");
     testModeSwitch<Neve1073Processor> ("Neve1073");
+    testAliasRejection<Neve1073Processor> ("Neve1073");
 
     std::printf ("-- Avalon737 --\n");
     testNoAllocation<Avalon737Processor> ("Avalon737");
@@ -381,6 +521,7 @@ int main()
     testQualityModeBassConsistency<Avalon737Processor> ("Avalon737");
     testRobustness<Avalon737Processor> ("Avalon737");
     testModeSwitch<Avalon737Processor> ("Avalon737");
+    testAliasRejection<Avalon737Processor> ("Avalon737");
 
     if (failures == 0)
     {
