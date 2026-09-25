@@ -167,7 +167,16 @@ int main (int argc, char** argv)
                       drive, r.fund, r.aliasDb,
                       r.bins[0], r.bins[1], r.bins[2], r.bins[3], r.bins[4], r.bins[5], r.sanity);
         for (const char* engine : { "juce", "eon" })
-            for (int factor : { 8, 16, 32 })
+        {
+            // eon::Oversampler supports 2x/4x/8x only — setStages clamps to
+            // 1..3, so asking it for 16x or 32x silently returns the 8x
+            // measurement. Emit the factors each engine can actually reach
+            // instead of three identical rows.
+            const std::vector<int> factors = std::string (engine) == "juce"
+                ? std::vector<int> { 8, 16, 32 }
+                : std::vector<int> { 2, 4, 8 };
+
+            for (int factor : factors)
             {
                 const Row m = measure (engine, factor, drive, baseIn);
                 std::fprintf (fp, "%s,%d,%.1f,%.6f,%.2f,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e,%.3e\n",
@@ -177,6 +186,7 @@ int main (int argc, char** argv)
                 std::fprintf (stderr, "%s %dx drive %.0f: alias %.1f dB\n",
                               engine, factor, drive, m.aliasDb);
             }
+        }
     }
     std::fclose (fp);
     std::printf ("wrote %s/alias.csv\n", dir.c_str());
