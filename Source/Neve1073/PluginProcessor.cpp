@@ -2,6 +2,19 @@
 #include "PluginEditor.h"
 #include "ParamFormat.h"
 
+namespace {
+
+// 1073 panel detents.
+constexpr std::array<float, 4> lowF  { 35.f, 60.f, 110.f, 220.f };
+constexpr std::array<float, 6> midF  { 360.f, 700.f, 1600.f, 3200.f, 4800.f, 7200.f };
+constexpr std::array<float, 3> highF { 10000.f, 12000.f, 16000.f };
+constexpr std::array<float, 5> hpfF  { 0.f, 50.f, 80.f, 160.f, 300.f };
+
+// Physical corner of the DC blocker, in hertz, at whatever rate it runs.
+constexpr double kDcBlockerHz = 18.0;
+
+} // namespace
+
 Neve1073Processor::Neve1073Processor()
     : AudioProcessor (BusesProperties()
                         .withInput  ("Input",  juce::AudioChannelSet::stereo(), true)
@@ -64,17 +77,105 @@ bool Neve1073Processor::isBusesLayoutSupported (const BusesLayout& layouts) cons
     return in == out && (in == juce::AudioChannelSet::mono() || in == juce::AudioChannelSet::stereo());
 }
 
+void Neve1073Processor::prepareDspRate (double processingRate)
+{
+    // Every stage that carries a physical time constant must be told the rate
+    // it actually runs at, otherwise its poles scale with the oversampling
+    // factor and the emulation changes character between quality modes.
+    for (auto& d : dc)       d.prepare (processingRate, kDcBlockerHz);
+    for (auto& a : air)      a.prepare (processingRate);
+    for (auto& i : inductor) i.prepare (processingRate);
+    for (auto& t : inTrans)  t.prepare (processingRate);
+    for (auto& t : outTrans) t.prepare (processingRate);
+}
+
+void Neve1073Processor::refreshCoefficients (double processingRate)
+{
+    const int lfIdx = (int) apvts.getRawParameterValue ("lowFreq")->load();
+    const int mfIdx = (int) apvts.getRawParameterValue ("midFreq")->load();
+    const int hfIdx = (int) apvts.getRawParameterValue ("highFreq")->load();
+    const int hpIdx = (int) apvts.getRawParameterValue ("hpf")->load();
+
+    const float lg = apvts.getRawParameterValue ("lowGain")->load();
+    const float mg = apvts.getRawParameterValue ("midGain")->load();
+    const float hg = apvts.getRawParameterValue ("highGain")->load();
+    const float mq = apvts.getRawParameterValue ("midQ")->load() * (1.f + std::abs (mg) * 0.07f);
+
+    const bool dirty = lfIdx != lastLowF || mfIdx != lastMidF || hfIdx != lastHighF
+                    || hpIdx != lastHp
+                    || lg != lastLowG || mg != lastMidG || hg != lastHighG || mq != lastMidQ;
+
+    if (! dirty)
+        return;
+
+    // Stack-allocated arrays assigned into preallocated coefficient objects:
+    // IIR::Coefficients::assignImpl only grows its storage, so this is
+    // allocation-free once prepareToPlay has created the objects.
+    const auto lc = ArrCoeff::makeLowShelf  (processingRate, lowF[lfIdx], 0.707f,
+                                             juce::Decibels::decibelsToGain (lg));
+    const auto mc = ArrCoeff::makePeakFilter (processingRate, midF[mfIdx], mq,
+                                             juce::Decibels::decibelsToGain (mg));
+    const auto hc = ArrCoeff::makeHighShelf (processingRate, highF[hfIdx], 0.707f,
+                                             juce::Decibels::decibelsToGain (hg));
+
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        *lowShelf[ch].coefficients  = lc;
+        *midPeak[ch].coefficients   = mc;
+        *highShelf[ch].coefficients = hc;
+    }
+
+    // The HPF switches between first and second order, so it is assigned
+    // separately: the two makers return different array sizes. JUCE resizes the
+    // filter state on the next block; that only happens when the user moves the
+    // HPF switch, never in steady state.
+    if (hpIdx > 0)
+    {
+        const auto pc = ArrCoeff::makeHighPass (processingRate, hpfF[hpIdx]);
+        for (int ch = 0; ch < 2; ++ch)
+            *highPass[ch].coefficients = pc;
+    }
+    else
+    {
+        const auto pc = ArrCoeff::makeFirstOrderHighPass (processingRate, 4.f);
+        for (int ch = 0; ch < 2; ++ch)
+            *highPass[ch].coefficients = pc;
+    }
+
+    lastLowF = lfIdx; lastMidF = mfIdx; lastHighF = hfIdx; lastHp = hpIdx;
+    lastLowG = lg;    lastMidG = mg;    lastHighG = hg;    lastMidQ = mq;
+}
+
 void Neve1073Processor::prepareToPlay (double sr, int sb)
 {
     osm.prepare ((size_t) sb);
     osm.setMode ((eon::QualityMode) (int) apvts.getRawParameterValue ("quality")->load());
     lastQuality = -1; // force coefficient rebuild on first block
 
-    juce::dsp::ProcessSpec spec { osm.rate (sr), (juce::uint32) sb * 32, 2 };
+    const double osRate = osm.rate (sr);
+    juce::dsp::ProcessSpec spec { osRate, (juce::uint32) sb * 32, 2 };
     for (auto& f : highPass)  f.prepare (spec);
     for (auto& f : lowShelf)  f.prepare (spec);
     for (auto& f : midPeak)   f.prepare (spec);
     for (auto& f : highShelf) f.prepare (spec);
+
+    // Preallocate the coefficient objects so the audio-thread refresh only ever
+    // writes into existing storage. The initial values are placeholders; the
+    // first processBlock overwrites them.
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        highPass[ch].coefficients  = Coeff::makeHighPass   (osRate, 300.f);
+        lowShelf[ch].coefficients  = Coeff::makeLowShelf   (osRate, 110.f, 0.707f, 1.f);
+        midPeak[ch].coefficients   = Coeff::makePeakFilter (osRate, 1600.f, 1.6f, 1.f);
+        highShelf[ch].coefficients = Coeff::makeHighShelf  (osRate, 12000.f, 0.707f, 1.f);
+    }
+    lastLowF = lastMidF = lastHighF = lastHp = -1;   // force a refresh
+    lastLowG = lastMidG = lastHighG = lastMidQ = 0.f;
+
+    // Sized for the largest oversampled block the host can hand us.
+    driveRamp.assign ((size_t) sb * 32u, 0.0f);
+
+    prepareDspRate (osRate);
 
     for (auto& t : inTrans)  t.reset();
     for (auto& t : outTrans) t.reset();
@@ -85,13 +186,16 @@ void Neve1073Processor::prepareToPlay (double sr, int sb)
     for (auto& d : dc)       d.reset();
     for (auto& a : air)      a.reset();
 
-    driveSm.reset (sr, 0.05);
+    // The drive ramp is consumed once per *oversampled* sample, so it must be
+    // prepared at the oversampled rate to stay a real 50 ms ramp. The output
+    // gain is applied to the base-rate buffer and stays at the host rate.
+    driveSm.reset (osRate, 0.05);
     outGainSm.reset (sr, 0.02);
     driveSm.setCurrentAndTargetValue (apvts.getRawParameterValue ("drive")->load());
     outGainSm.setCurrentAndTargetValue (juce::Decibels::decibelsToGain (
         apvts.getRawParameterValue ("output")->load()));
 
-    silentEnv = 0.0;
+    activity.prepare (sr);
     setLatencySamples ((int) osm.latency());
 }
 
@@ -105,56 +209,50 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
 {
     juce::ScopedNoDenormals noDenormals;
 
-    static constexpr std::array<float, 4> lowF  { 35.f, 60.f, 110.f, 220.f };
-    static constexpr std::array<float, 6> midF  { 360.f, 700.f, 1600.f, 3200.f, 4800.f, 7200.f };
-    static constexpr std::array<float, 3> highF { 10000.f, 12000.f, 16000.f };
-    static constexpr std::array<float, 5> hpfF  { 0.f, 50.f, 80.f, 160.f, 300.f };
-
-    const int lfIdx = (int) apvts.getRawParameterValue ("lowFreq")->load();
+    const int qIdx = (int) apvts.getRawParameterValue ("quality")->load();
     const int mfIdx = (int) apvts.getRawParameterValue ("midFreq")->load();
-    const int hfIdx = (int) apvts.getRawParameterValue ("highFreq")->load();
     const int hpIdx = (int) apvts.getRawParameterValue ("hpf")->load();
-    const int qIdx  = (int) apvts.getRawParameterValue ("quality")->load();
     const bool adaptiveOn = apvts.getRawParameterValue ("adaptive")->load() > 0.5f;
     const bool analogOn   = apvts.getRawParameterValue ("analog")->load() > 0.5f;
 
-    const float lg = apvts.getRawParameterValue ("lowGain")->load();
     const float mg = apvts.getRawParameterValue ("midGain")->load();
-    const float hg = apvts.getRawParameterValue ("highGain")->load();
     const float mq = apvts.getRawParameterValue ("midQ")->load() * (1.f + std::abs (mg) * 0.07f);
 
     driveSm.setTargetValue (apvts.getRawParameterValue ("drive")->load());
     outGainSm.setTargetValue (juce::Decibels::decibelsToGain (
         apvts.getRawParameterValue ("output")->load()));
 
-    // quality mode change -> pick another oversampler, push latency async
+    const double sr = getSampleRate();
+    double osRate = osm.rate (sr);
+
+    // quality mode change -> pick another oversampler, re-derive every
+    // rate-dependent constant, push latency async
     if (qIdx != lastQuality)
     {
         osm.setMode ((eon::QualityMode) qIdx);
         osm.current().reset();  // drop stale audio from its delay line
         for (auto& t : triode) t.iterations = osm.triodeIterations();
+
+        osRate = osm.rate (sr);
+        prepareDspRate (osRate);
+
+        // Keep the drive ramp continuous across the processing-rate change.
+        const float target  = driveSm.getTargetValue();
+        const float current = driveSm.getCurrentValue();
+        driveSm.reset (osRate, 0.05);
+        driveSm.setCurrentAndTargetValue (current);
+        driveSm.setTargetValue (target);
+
         lastQuality = qIdx;
         triggerAsyncUpdate();   // host latency notification off the audio path
     }
 
-    const double osRate = osm.rate (getSampleRate());
+    refreshCoefficients (osRate);
 
-    {
-        const auto lc = Coeff::makeLowShelf  (osRate, lowF[lfIdx], 0.707f, juce::Decibels::decibelsToGain (lg));
-        const auto mc = Coeff::makePeakFilter (osRate, midF[mfIdx], mq,     juce::Decibels::decibelsToGain (mg));
-        const auto hc = Coeff::makeHighShelf (osRate, highF[hfIdx], 0.707f, juce::Decibels::decibelsToGain (hg));
-        const auto pc = hpIdx > 0 ? Coeff::makeHighPass (osRate, hpfF[hpIdx])
-                                  : Coeff::makeFirstOrderHighPass (osRate, 4.f);
-        for (auto& f : lowShelf)  f.coefficients = lc;
-        for (auto& f : midPeak)   f.coefficients = mc;
-        for (auto& f : highShelf) f.coefficients = hc;
-        for (auto& f : highPass)  f.coefficients = pc;
-    }
-
-    // adaptive: track input level; sustained silence skips the nonlinear loop
-    const float blockRMS = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
-    silentEnv = silentEnv * 0.9 + blockRMS * 0.1;
-    const bool skipNonlinear = adaptiveOn && silentEnv < 1e-6;
+    // Adaptive CPU: look at every channel, and keep the chain running for a
+    // hold-off window after the last active block so transformer and DA tails
+    // finish instead of being chopped.
+    const bool runChain = ! adaptiveOn || activity.active (buffer);
 
     juce::dsp::AudioBlock<float> block (buffer);
     auto osBlock = osm.current().processSamplesUp (block);
@@ -165,17 +263,18 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     const float indDrive = 0.5f + std::abs (mg) * 0.26f + driveSm.getCurrentValue() * 0.10f;
 
     // consume the drive ramp once per block — shared by every channel
-    auto drives = std::vector<float> ((size_t) N);
-    for (int i = 0; i < N; ++i) drives[i] = driveSm.getNextValue();
+    if ((int) driveRamp.size() < N)
+        driveRamp.resize ((size_t) N);   // safety net; prepareToPlay sizes this
+    for (int i = 0; i < N; ++i) driveRamp[(size_t) i] = driveSm.getNextValue();
 
-    if (! skipNonlinear)
+    if (runChain)
     {
         for (int ch = 0; ch < numCh; ++ch)
         {
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < N; ++i)
             {
-                const float drive = drives[i];
+                const float drive = driveRamp[(size_t) i];
                 float x = d[i] * (1.f + drive * 0.50f);
 
                 x = inTrans[ch].process (x);                    // JA input transformer
@@ -217,4 +316,8 @@ void Neve1073Processor::setStateInformation (const void* data, int size)
 
 juce::AudioProcessorEditor* Neve1073Processor::createEditor() { return new Neve1073Editor (*this); }
 
+// Both processors export this entry point, so the quality harness (which
+// compiles them into one executable) defines EON_QUALITY_HARNESS to skip it.
+#ifndef EON_QUALITY_HARNESS
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter() { return new Neve1073Processor(); }
+#endif
