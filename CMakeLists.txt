@@ -85,6 +85,7 @@ endfunction()
 function(add_eon_god name product_name code)
     juce_add_plugin(${name}
         COMPANY_NAME "EON AUDIO"
+        COMPANY_COPYRIGHT "Copyright (c) 2026 EON AUDIO"
         COMPANY_WEBSITE "https://eon.audio"
         COMPANY_EMAIL "dev@eon.audio"
         BUNDLE_ID "audio.eon.${name}"
