@@ -1,7 +1,9 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 #include <cmath>
+#include <limits>
+#include <numbers>
 #include <vector>
-#include <algorithm>
 
 namespace eon {
 namespace measure {
@@ -15,20 +17,23 @@ namespace measure {
 // for non-bin-aligned frequencies). Phase-locked reference — robust for THD.
 inline double binMag (const float* buf, size_t N, double freq, double sr)
 {
-    const double w = 2.0 * M_PI * freq / sr;
+    const double w = 2.0 * std::numbers::pi * freq / sr;
     double re = 0.0, im = 0.0;
     for (size_t i = 0; i < N; ++i)
     {
         re += (double) buf[i] * std::cos (w * (double) i);
         im -= (double) buf[i] * std::sin (w * (double) i);
     }
-    return std::sqrt (re * re + im * im) * (2.0 / (double) N);
+    // x2/N normalisation is for non-zero sinusoids; a DC bin reads 2x otherwise.
+    return std::sqrt (re * re + im * im) * ((freq == 0.0 ? 1.0 : 2.0) / (double) N);
 }
 
-// Harmonic amplitudes H1..maxH of a recorded sine response.
+// Harmonic amplitudes H1..maxH of a recorded sine response. Empty when
+// maxH < 1 (there is no harmonic to measure).
 inline std::vector<double> harmonics (const float* buf, size_t N,
                                       double f0, double sr, int maxH = 6)
 {
+    if (maxH < 1) return {};
     std::vector<double> h ((size_t) maxH);
     for (int k = 1; k <= maxH; ++k)
         h[(size_t) k - 1] = binMag (buf, N, f0 * (double) k, sr);
@@ -36,10 +41,17 @@ inline std::vector<double> harmonics (const float* buf, size_t N,
 }
 
 // THD% = 100 * sqrt(H2^2+..+HmaxH^2) / H1
+//
+// NaN when the ratio is undefined: f0 <= 0 (a DC signal has no harmonic
+// series), maxH < 1, or H1 == 0 (no fundamental). Reporting 0 there would look
+// like "clean" for input that carries no measurable fundamental at all.
 inline double thdPercent (const float* buf, size_t N, double f0, double sr,
                           int maxH = 6)
 {
+    constexpr double undefined = std::numeric_limits<double>::quiet_NaN();
+    if (! (f0 > 0.0) || ! (sr > 0.0)) return undefined;
     const auto h = harmonics (buf, N, f0, sr, maxH);
+    if (h.empty() || ! (h[0] > 0.0)) return undefined;
     double p2 = 0.0;
     for (size_t k = 1; k < h.size(); ++k) p2 += h[k] * h[k];
     return 100.0 * std::sqrt (p2) / h[0];
@@ -70,7 +82,7 @@ template <typename F>
 inline void renderSine (F&& proc, float* buf, size_t N, double freq,
                         double amp, double sr, int settle)
 {
-    const double w = 2.0 * M_PI * freq / sr;
+    const double w = 2.0 * std::numbers::pi * freq / sr;
     for (int i = 0; i < settle; ++i)
         proc ((float) (amp * std::sin (w * (double) i)));
     for (size_t i = 0; i < N; ++i)

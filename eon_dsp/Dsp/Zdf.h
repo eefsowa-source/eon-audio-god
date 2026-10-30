@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 #include <cmath>
+#include <numbers>
 #include <algorithm>
 
 namespace eon {
@@ -20,7 +22,8 @@ struct OnePoleTPT
     double g = 0.0, s = 0.0;
     void setCutoff (double fc, double fs)
     {
-        g = std::tan (M_PI * std::min (fc, 0.49 * fs) / fs);
+        if (! (fs > 0.0) || ! (fc > 0.0)) { g = 0.0; return; }
+        g = std::tan (std::numbers::pi * std::min (fc, 0.49 * fs) / fs);
     }
     void reset() { s = 0.0; }
     inline double process (double x)
@@ -33,14 +36,18 @@ struct OnePoleTPT
     }
 };
 
-// TPT state-variable filter: simultaneous lp / bp / hp / notch.
-// R = 1/(2Q) damping. Q = 0.5 is butterworth-ish.
+// TPT state-variable filter: simultaneous lp / bp / hp (notch = lp + hp).
+// R = 1/(2Q) is the damping term. Q = 0.5 (R = 1) is critically damped and has
+// no passband peak; Butterworth is Q = 1/sqrt(2) ~ 0.7071 (~4.3% step
+// overshoot) and Q = 1 peaks at ~16%. Measured by the step test in
+// Tests/UtilityTests.cpp.
 struct SvfTPT
 {
     double g = 0.0, R = 1.0, s1 = 0.0, s2 = 0.0;
     void setParams (double fc, double q, double fs)
     {
-        g = std::tan (M_PI * std::min (fc, 0.49 * fs) / fs);
+        if (! (fs > 0.0) || ! (fc > 0.0)) { g = 0.0; R = 1.0; return; }
+        g = std::tan (std::numbers::pi * std::min (fc, 0.49 * fs) / fs);
         R = 1.0 / (2.0 * std::max (0.05, q));
     }
     void reset() { s1 = s2 = 0.0; }
@@ -70,7 +77,8 @@ struct Ladder4
 
     void setCutoff (double fc, double fs)
     {
-        g = std::tan (M_PI * std::min (fc, 0.49 * fs) / fs);
+        if (! (fs > 0.0) || ! (fc > 0.0)) { g = 0.0; return; }
+        g = std::tan (std::numbers::pi * std::min (fc, 0.49 * fs) / fs);
     }
     void setResonance (double r) { k = std::clamp (r, 0.0, 4.0); }
     void reset() { s[0] = s[1] = s[2] = s[3] = 0.0; }

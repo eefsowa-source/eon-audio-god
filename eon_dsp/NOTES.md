@@ -8,6 +8,7 @@ projects. Include the repository root and include headers as `Dsp/<name>.h`.
 | `Dsp/Adaa.h` | Double-precision ADAA1/ADAA2 state and antiderivatives; `TanhSat`, `SoftClip`, and `SoftClipSat` |
 | `Dsp/Measure.h` | Measurement and analysis helpers |
 | `Dsp/Oversampling.h` | Stateful 2x/4x/8x half-band polyphase oversampler |
+| `Dsp/Rate.h` | Rate compensation for per-sample one-pole constants (`rescalePole`, `rescaleNoise`) |
 | `Dsp/Rng.h` | Deterministic per-instance PRNG |
 | `Dsp/RtGuard.h` | Scoped denormal handling helper |
 | `Dsp/Solvers.h` | Numerical solver helpers, including Lambert W |
@@ -19,9 +20,20 @@ projects. Include the repository root and include headers as `Dsp/<name>.h`.
 
 ## Runtime contracts
 
+- **Rate independence:** `InductorResonator`, `AnalogAir`, `SagThermal`,
+  `ClassAStage`, and `JilesAtherton` store physical time constants and must be
+  given `prepare(rateHz)` with the *processing* rate — the oversampled rate
+  when the stage runs inside an oversampling loop. Without it they replay the
+  48 kHz authoring constants per sample, so their poles (and the noise floor)
+  scale with the oversampling factor. `Dsp/Rate.h` holds the transform;
+  `Tests/RateIndependenceTests.cpp` is the gate.
 - **DCBlocker:** Call `prepare(sampleRate, cutoffHz)` before processing. Both
   values must be finite and strictly positive; the default cutoff is 18 Hz.
   Call `reset()` when starting a new signal/state epoch.
+- **Oversampler eco stage 0:** `ecoStage0` selects a separate filter with its
+  own delay history and latency. Change it only while the stream is stopped,
+  then call `reset()`; flipping it mid-stream clicks (measured: ~35x the normal
+  sample-to-sample step on a 200 Hz sine).
 - **Oversampler:** Call `prepare(maxBlock)` with the largest host-rate block
   that will be passed to `up()` or `down()`. Keep every call at or below that
   capacity; scratch storage is sized during prepare. Set the stage count (1–3,
@@ -51,6 +63,13 @@ projects. Include the repository root and include headers as `Dsp/<name>.h`.
 - **WdfCapacitor:** `voltage()` reports the voltage saved at the last
   scattering operation. It is a held state value and is not recomputed by the
   getter.
+- **WdfDiode / WdfVSourceIdeal / WdfISourceRes:** `reset()` clears the stored
+  incident wave. `WdfDiode` returns `-a` (total reflection) when `R`, `Is`,
+  or `Vt` is invalid and 0 for non-finite input. `WdfISourceRes` evaluates
+  `b = a - 2R*Is` with the last incident wave it saw — exact at the root,
+  one sample late as a leaf.
+- **Rng:** instances sharing the default seed emit identical streams; call
+  `reseed()` per channel/stage that needs decorrelated noise.
 
 ## Build and test
 
@@ -76,6 +95,29 @@ ctest --test-dir build-sanitize --output-on-failure
 
 ## Verification record
 
+2026-10-23, working tree on top of `d851186`: same 51 core tests pass in
+Release + ASan/UBSan and in Debug, all 12 headers compile standalone. This
+revision halves the oversampler FIR work: `HalfBand2x` evaluates both polyphase
+sums in symmetric-folded form (every tap set is `static constexpr` and now
+gated by `hbTapsSymmetric`), replaces the `%` delay-line indexing with a
+compare-based wrap and the even-branch line with masked indexing. Measured
+up+down roundtrip on one machine: 2x 46.1 -> 26.4 ns, 4x 110.1 -> 61.4 ns,
+8x 206.3 -> 118.6 ns per base sample; output is bit-identical to the previous
+header across 1,200,000 samples (all stage counts and both `ecoStage0`
+settings), so block-partition invariance and `latencySamples()` are unchanged.
+`.github/workflows/bump-products.yml` now rejects non-release tags, fails on
+`gh` auth/API errors instead of reporting them as "no platform pin", and only
+prints "bump PR opened" after a successful `gh pr create`. The 2026-10-22
+record below is kept for history.
+
+2026-10-22, working tree on top of `d851186`: 51 core tests pass in Release
++ ASan/UBSan and in Debug, all 12 headers compile standalone. Fixes in this
+revision: `InductorResonator` output tap no longer scales with the processing
+rate (~1.1 dB gain drift at 8x removed); `ADAA2` uses the three-node centroid
+when the node span is < 1e-4 (slow-signal error 6e-3 -> ~5e-8); `DCBlocker::prepare`
+rejects +-Inf. Each has a regression test that fails on the previous code.
+The 2026-09-22 record below is kept for history.
+
 2026-09-22, source revision `cb2cc2c`: 35 core tests passed; all 11 public
 headers were included in header compile checks; Debug, Release, and
 ASan/UBSan CTest runs each passed 2/2 tests. This records core-library build
@@ -84,16 +126,35 @@ loading, visual rendering, or DAW listening results.
 
 ## Vendored third-party (added 2026-09-18)
 
-| Path | Contents | Include |
-|---|---|---|
-| `third_party/sst-basic-blocks` | Surge Synth Team DSP primitives (C++20, header-only): `dsp/` (filters, envelopes, clippers, quads), `modulators/`, `mod-matrix/`, `params/`, `simd/`, `tables/` | `-I third_party/sst-basic-blocks/include` then `#include "sst/basic-blocks/..."` |
-| `third_party/sst-cpputils` | header-only utils required by sst-basic-blocks (`ring_buffer.h`, `rtsan_support.h`, allocators) | `-I third_party/sst-cpputils/include` |
-| `third_party/simde` | SIMDe — SSE intrinsics shim required by sst-basic-blocks on Apple Silicon | `-I third_party/simde` |
+**Not part of the library, and not linked by anything.** No header in `Dsp/`,
+no test, no CMake target and no CI workflow references `third_party/`, so
+nothing here is compiled, linked or shipped by `eon_dsp`.
+
+| Path | Contents | License | State |
+|---|---|---|---|
+| `third_party/sst-basic-blocks` | Surge Synth Team DSP primitives (header-only: filters, envelopes, clippers, quads, modulators, mod-matrix, params, simd, tables) | **GPL-3.0** | **Removed 2026-10-24** — never used here and incompatible with an MIT build |
+| `third_party/sst-cpputils` | header-only utils that `sst-basic-blocks` needed (`ring_buffer.h`, `rtsan_support.h`, allocators) | MIT | Present; unused |
+| `third_party/simde` | SIMDe — SSE intrinsics shim that `sst-basic-blocks` needed on Apple Silicon | MIT | Present; unused |
 
 Update with `git -C third_party/<repo> pull` (shallow clones).
-All three include paths are needed together on arm64.
-`mod-matrix` needs sst-cpputils; without its include path define
-`SST_CPPUTILS_UNAVAILABLE=1` to drop those features.
+
+### Why `sst-basic-blocks` was removed
+
+It is GPL-3.0 and `eon_dsp` is MIT. Adding its include path to a product
+build, or shipping that code inside a plugin binary, makes the combined work
+GPL-3.0. Nothing in this repository ever included it, so it was a liability with
+no benefit — the gitlink and its `.gitmodules` stanza were dropped in
+`third_party/sst-basic-blocks` removal rather than left for someone to
+discover later.
+
+`sst-cpputils` and `simde` are MIT and are kept as reference, but they only
+existed to serve `sst-basic-blocks`, so they are equally unused here and are
+candidates for the same treatment. To adopt a primitive from any of this code,
+reimplement it from the published DSP math and gate the result on this
+library's own tests.
+
+The history is recoverable if ever needed:
+`git show cac8aaf:.gitmodules` and `git ls-tree cac8aaf third_party/`.
 
 ## Duplicate implementations elsewhere (surveyed 2026-09-18)
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 #include <cmath>
 #include <algorithm>
@@ -62,7 +63,7 @@ struct TriodeStage
     {
         cathodeRk = rkOhms;
         cathodeCk = ckFarads;
-        cathodePole = rkOhms > 0.f
+        cathodePole = (rkOhms > 0.f && ckFarads > 0.f && rateHz > 0.0)
             ? std::exp (-1.0 / ((double) rkOhms * ckFarads * rateHz)) : 0.0;
     }
 
