@@ -1,5 +1,7 @@
+// SPDX-License-Identifier: MIT
 #pragma once
 #include <cmath>
+#include <limits>
 
 namespace eon {
 
@@ -17,6 +19,10 @@ namespace eon {
 //
 // Requires *exact* antiderivatives. When consecutive samples are too close,
 // fall back to midpoint evaluations (F2' = F1) instead of dividing by ~0.
+//
+// reset() zeroes the stored antiderivative values — callers must supply
+// antiderivatives normalised so F(0) = 0 (true for the bundled devices), or
+// the first output after reset is biased.
 // ---------------------------------------------------------------------------
 
 struct ADAA1
@@ -53,10 +59,48 @@ struct ADAA2
         const double dx12 = x1 - x2;
         const double dx02 = (double) x0 - x2;
 
+        // When all three nodes are within ~1e-4 of each other the second divided
+        // difference of F2 cancels ~eps*|F2|/span^2 (6e-3 at span 6e-8, measured),
+        // far above the O(span^2) error of the centroid approximation
+        // f((x0+x1+x2)/3). Use the centroid in that regime; the exact branches
+        // below only matter once the quotient is well conditioned.
+        const double span = std::fmax (std::abs (dx02),
+                                       std::fmax (std::abs (dx01), std::abs (dx12)));
+        constexpr double kCentroidSpan = 1e-4;
+
         double y;
-        if (std::abs (dx02) < eps)
+        if (span < kCentroidSpan)
         {
-            y = f (x0); // x0 ~= x1 ~= x2: converged
+            y = f ((static_cast<double> (x0) + x1 + x2) / 3.0);
+        }
+        else if (std::abs (dx02) < eps)
+        {
+            if (std::abs (dx01) < eps)
+            {
+                y = f ((static_cast<double> (x0) + x1 + x2) / 3.0);
+            }
+            else
+            {
+                const double a = x0;
+                const double b = x1;
+                const double da = a - b;
+                const double scale = std::fmax (1.0,
+                                                std::fmax (std::abs (a), std::abs (b)));
+                const double middle_eps = std::sqrt (std::numeric_limits<float>::epsilon ()) * scale;
+
+                if (std::abs (da) <= middle_eps)
+                {
+                    // The quotient expands as f(a) + (b-a)f'(a)/3 + O((b-a)^2).
+                    // The centroid keeps the linear term; at this scale its
+                    // second-order error is at float precision while the quotient
+                    // still loses precision through subtraction of O(da) terms.
+                    y = f (a + (b - a) / 3.0);
+                }
+                else
+                {
+                    y = 2.0 * (f1 (a) * da - F2x0 + F2x1) / (da * da);
+                }
+            }
         }
         else
         {

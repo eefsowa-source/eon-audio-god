@@ -15,6 +15,9 @@ Neve1073Processor::Neve1073Processor()
     outTrans[0].setTolerance (t1 * 0.985f);
     outTrans[1].setTolerance (t2 * 1.015f);
     inductor[0].setTolerance (t1); inductor[1].setTolerance (t2);
+    // voicing: input transformer stays a light always-on color, output iron takes the heat
+    for (auto& t : inTrans)  t.drive = 0.05f;
+    for (auto& t : outTrans) t.drive = 1.4f;
 }
 
 juce::AudioProcessorValueTreeState::ParameterLayout Neve1073Processor::createLayout()
@@ -64,10 +67,16 @@ bool Neve1073Processor::isBusesLayoutSupported (const BusesLayout& layouts) cons
 void Neve1073Processor::prepareToPlay (double sr, int sb)
 {
     osm.prepare ((size_t) sb);
+    driveScratch.resize (static_cast<size_t> (sb) * 32u);
     osm.setMode ((eon::QualityMode) (int) apvts.getRawParameterValue ("quality")->load());
     lastQuality = -1; // force coefficient rebuild on first block
 
     juce::dsp::ProcessSpec spec { osm.rate (sr), (juce::uint32) sb * 32, 2 };
+    const std::array<float, 6> secondOrderIdentity { 1.f, 0.f, 0.f, 1.f, 0.f, 0.f };
+    for (auto& f : highPass)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowShelf)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : midPeak)   *f.coefficients = secondOrderIdentity;
+    for (auto& f : highShelf) *f.coefficients = secondOrderIdentity;
     for (auto& f : highPass)  f.prepare (spec);
     for (auto& f : lowShelf)  f.prepare (spec);
     for (auto& f : midPeak)   f.prepare (spec);
@@ -137,19 +146,24 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     const double osRate = osm.rate (getSampleRate());
 
     {
-        const auto lc = Coeff::makeLowShelf  (osRate, lowF[lfIdx], 0.707f, juce::Decibels::decibelsToGain (lg));
-        const auto mc = Coeff::makePeakFilter (osRate, midF[mfIdx], mq,     juce::Decibels::decibelsToGain (mg));
-        const auto hc = Coeff::makeHighShelf (osRate, highF[hfIdx], 0.707f, juce::Decibels::decibelsToGain (hg));
-        const auto pc = hpIdx > 0 ? Coeff::makeHighPass (osRate, hpfF[hpIdx])
-                                  : Coeff::makeFirstOrderHighPass (osRate, 4.f);
-        for (auto& f : lowShelf)  f.coefficients = lc;
-        for (auto& f : midPeak)   f.coefficients = mc;
-        for (auto& f : highShelf) f.coefficients = hc;
-        for (auto& f : highPass)  f.coefficients = pc;
+        using ArrayCoeff = juce::dsp::IIR::ArrayCoefficients<float>;
+        const auto lc = ArrayCoeff::makeLowShelf  (osRate, lowF[lfIdx], 0.707f, juce::Decibels::decibelsToGain (lg));
+        const auto mc = ArrayCoeff::makePeakFilter (osRate, midF[mfIdx], mq,     juce::Decibels::decibelsToGain (mg));
+        const auto hc = ArrayCoeff::makeHighShelf (osRate, highF[hfIdx], 0.707f, juce::Decibels::decibelsToGain (hg));
+        for (auto& f : lowShelf)  *f.coefficients = lc;
+        for (auto& f : midPeak)   *f.coefficients = mc;
+        for (auto& f : highShelf) *f.coefficients = hc;
+        if (hpIdx > 0)
+        {
+            const auto pc = ArrayCoeff::makeHighPass (osRate, hpfF[hpIdx]);
+            for (auto& f : highPass) *f.coefficients = pc;
+        }
     }
 
     // adaptive: track input level; sustained silence skips the nonlinear loop
-    const float blockRMS = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    float blockRMS = 0.0f;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        blockRMS = std::max (blockRMS, buffer.getRMSLevel (ch, 0, buffer.getNumSamples()));
     silentEnv = silentEnv * 0.9 + blockRMS * 0.1;
     const bool skipNonlinear = adaptiveOn && silentEnv < 1e-6;
 
@@ -159,11 +173,11 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
     const int numCh = (int) std::min (osBlock.getNumChannels(), (size_t) 2);
     const int N = (int) osBlock.getNumSamples();
     const bool useTriode = osm.useTriode();
-    const float indDrive = 1.f + std::abs (mg) * 0.26f + driveSm.getCurrentValue() * 0.10f;
+    const float indDrive = 0.5f + std::abs (mg) * 0.26f + driveSm.getCurrentValue() * 0.10f;
 
     // consume the drive ramp once per block — shared by every channel
-    auto drives = std::vector<float> ((size_t) N);
-    for (int i = 0; i < N; ++i) drives[i] = driveSm.getNextValue();
+    jassert (static_cast<size_t> (N) <= driveScratch.size());
+    for (int i = 0; i < N; ++i) driveScratch[static_cast<size_t> (i)] = driveSm.getNextValue();
 
     if (! skipNonlinear)
     {
@@ -172,8 +186,8 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < N; ++i)
             {
-                const float drive = drives[i];
-                float x = d[i] * (1.f + drive * 0.20f);
+                const float drive = driveScratch[static_cast<size_t> (i)];
+                float x = d[i] * (1.f + drive * 0.50f);
 
                 x = inTrans[ch].process (x);                    // JA input transformer
                 if (hpIdx != 0) x = highPass[ch].processSample (x);
@@ -183,9 +197,9 @@ void Neve1073Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::Mi
                 x = midPeak[ch].processSample (x);
 
                 if (useTriode)
-                    x = triode[ch].process (x * 0.45f) * 0.9f + x * 0.35f;
+                    x = triode[ch].process (x * 0.15f) * 0.9f + x * 0.35f;
                 else
-                    x = clip[ch].process (x * 0.7f) * 1.2f + x * 0.25f;
+                    x = clip[ch].process (x * 0.35f) * 1.2f + x * 0.25f;
 
                 x = highShelf[ch].processSample (x);
                 x = outTrans[ch].process (x * 0.88f);           // JA output transformer

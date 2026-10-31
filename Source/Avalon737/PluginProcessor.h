@@ -5,6 +5,8 @@
 #include "Dsp/Stages.h"
 #include "Quality.h"
 
+struct ProcessorTestAccess;
+
 class Avalon737Processor : public juce::AudioProcessor,
                            private juce::AsyncUpdater
 {
@@ -35,6 +37,8 @@ public:
     juce::AudioProcessorValueTreeState apvts;
 
 private:
+    friend struct ProcessorTestAccess;
+
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
     void handleAsyncUpdate() override;
 
@@ -42,17 +46,17 @@ private:
     int lastQuality = -1;
 
     using Filter = juce::dsp::IIR::Filter<float>;
-    using Coeff  = juce::dsp::IIR::Coefficients<float>;
     Filter highPass[2], lowShelf[2], lowMid[2], highMid[2], highShelf[2];
 
     eon::ClassAStage   classA[2], meltA[2];   // main Class-A path + 32k melt path
     eon::TriodeStage   triode[2];
     eon::SoftClipSat   clip[2];
-    eon::TanhSat       tanh[2];
+    eon::TanhSat       inputTanh[2], interstageTanh[2], airTanh[2];
     eon::DCBlocker     dc[2];
     eon::AnalogAir     air[2];
 
     juce::SmoothedValue<float> driveSm, outGainSm;
+    std::vector<float> driveScratch;
     double silentEnv = 0.0;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (Avalon737Processor)

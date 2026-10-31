@@ -137,20 +137,21 @@ static void dumpThd (const std::string& dir)
         eon::TanhSat tanh;
         eon::DCBlocker dc;
         triode.iterations = 2;  // GOD mode
+        inTrans.drive = 0.05f; outTrans.drive = 1.4f;  // mirror Neve1073Processor staging
         inTrans.reset(); outTrans.reset(); ind.reset();
         triode.reset(); tanh.reset(); dc.reset();
 
-        const float indDrive = 1.f + drive * 0.10f;
+        const float indDrive = 0.5f + drive * 0.10f;
         const double w = 2.0 * M_PI * 1000.0 / osRate;
 
         for (int i = 0; i < settle + N; ++i)
         {
             float x = (float) (0.3 * std::sin (w * i));
-            x *= 1.f + drive * 0.20f;
+            x *= 1.f + drive * 0.50f;
             x = inTrans.process (x);
             x = tanh.process (x * 0.82f) * 1.05f;
             x = ind.process (x, 1600.f, 1.6f, indDrive);
-            x = triode.process (x * 0.45f) * 0.9f + x * 0.35f;
+            x = triode.process (x * 0.15f) * 0.9f + x * 0.35f;
             x = outTrans.process (x * 0.88f);
             x = dc.process (x);
             if (i >= settle) buf[(size_t) i - settle] = x;
@@ -171,6 +172,59 @@ static void dumpThd (const std::string& dir)
     std::fclose (fp);
 }
 
+// Staging sweep: inTrans.drive x outTrans.drive, each scored at
+// param-drive {0, 3.5, 10} with input level 0.3. One row per cell —
+// pick the cell closest to the chosen target curve.
+static void dumpThdMatrix (const std::string& dir)
+{
+    constexpr int settle = 16384, N = 65536;
+    std::vector<float> buf ((size_t) N);
+    const float jaDrives[] { 0.2f, 0.4f, 0.6f, 0.8f, 1.0f, 1.4f, 1.9f };
+    const float pDrives[]  { 0.0f, 3.5f, 10.0f };
+    FILE* fp = std::fopen ((dir + "/thd_matrix.csv").c_str(), "w");
+    std::fprintf (fp, "in_drive,out_drive,param_drive,thd_pct,h2_pct,h3_pct\n");
+
+    for (float inD : jaDrives) for (float outD : jaDrives) for (float drive : pDrives)
+    {
+        eon::JilesAtherton inTrans, outTrans;
+        eon::InductorResonator ind;
+        eon::TriodeStage triode;
+        eon::TanhSat tanh;
+        eon::DCBlocker dc;
+        inTrans.drive = inD;  outTrans.drive = outD;
+        triode.iterations = 2;
+        inTrans.reset(); outTrans.reset(); ind.reset();
+        triode.reset(); tanh.reset(); dc.reset();
+
+        const float indDrive = 0.5f + drive * 0.10f;
+        const double w = 2.0 * M_PI * 1000.0 / osRate;
+        for (int i = 0; i < settle + N; ++i)
+        {
+            float x = (float) (0.3 * std::sin (w * i));
+            x *= 1.f + drive * 0.50f;
+            x = inTrans.process (x);
+            x = tanh.process (x * 0.82f) * 1.05f;
+            x = ind.process (x, 1600.f, 1.6f, indDrive);
+            x = triode.process (x * 0.15f) * 0.9f + x * 0.35f;
+            x = outTrans.process (x * 0.88f);
+            x = dc.process (x);
+            if (i >= settle) buf[(size_t) i - settle] = x;
+        }
+        const double h1 = binMag (buf.data(), N, 1000.0, osRate);
+        const double h2 = binMag (buf.data(), N, 2000.0, osRate);
+        const double h3 = binMag (buf.data(), N, 3000.0, osRate);
+        double p2 = 0;
+        for (int k = 2; k <= 6; ++k)
+        {
+            const double h = binMag (buf.data(), N, 1000.0 * k, osRate);
+            p2 += h * h;
+        }
+        std::fprintf (fp, "%.1f,%.1f,%.1f,%.4f,%.4f,%.4f\n", inD, outD, drive,
+                      100.0 * std::sqrt (p2) / h1, 100 * h2 / h1, 100 * h3 / h1);
+    }
+    std::fclose (fp);
+}
+
 int main (int argc, char** argv)
 {
     const std::string dir = argc > 1 ? argv[1] : "measurements";
@@ -179,5 +233,7 @@ int main (int argc, char** argv)
     std::printf ("wrote %s/eq_curves.csv\n", dir.c_str());
     dumpThd (dir);
     std::printf ("wrote %s/thd.csv\n", dir.c_str());
+    dumpThdMatrix (dir);
+    std::printf ("wrote %s/thd_matrix.csv\n", dir.c_str());
     return 0;
 }

@@ -1,5 +1,6 @@
 build/
 build-*/
+.codegraph/
 .DS_Store
 .vscode/
 .idea/

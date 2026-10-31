@@ -63,10 +63,17 @@ bool Avalon737Processor::isBusesLayoutSupported (const BusesLayout& layouts) con
 void Avalon737Processor::prepareToPlay (double sr, int sb)
 {
     osm.prepare ((size_t) sb);
+    driveScratch.resize (static_cast<size_t> (sb) * 32u);
     osm.setMode ((eon::QualityMode) (int) apvts.getRawParameterValue ("quality")->load());
     lastQuality = -1;
 
     juce::dsp::ProcessSpec spec { osm.rate (sr), (juce::uint32) sb * 32, 2 };
+    const std::array<float, 6> secondOrderIdentity { 1.f, 0.f, 0.f, 1.f, 0.f, 0.f };
+    for (auto& f : highPass)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowShelf)  *f.coefficients = secondOrderIdentity;
+    for (auto& f : lowMid)    *f.coefficients = secondOrderIdentity;
+    for (auto& f : highMid)   *f.coefficients = secondOrderIdentity;
+    for (auto& f : highShelf) *f.coefficients = secondOrderIdentity;
     for (auto& f : highPass)  f.prepare (spec);
     for (auto& f : lowShelf)  f.prepare (spec);
     for (auto& f : lowMid)    f.prepare (spec);
@@ -77,7 +84,9 @@ void Avalon737Processor::prepareToPlay (double sr, int sb)
     for (auto& a : meltA)  a.reset();
     for (auto& t : triode) { t.iterations = osm.triodeIterations(); t.reset(); }
     for (auto& c : clip)   c.reset();
-    for (auto& a : tanh)   a.reset();
+    for (auto& a : inputTanh)      a.reset();
+    for (auto& a : interstageTanh) a.reset();
+    for (auto& a : airTanh)       a.reset();
     for (auto& d : dc)     d.reset();
     for (auto& a : air)    a.reset();
 
@@ -135,19 +144,22 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const double osRate = osm.rate (getSampleRate());
 
     {
-        const auto pc = Coeff::makeHighPass   (osRate, hpF[hpIdx]);
-        const auto lc = Coeff::makeLowShelf   (osRate, lowF[lfIdx], 0.68f, juce::Decibels::decibelsToGain (lg));
-        const auto lmc = Coeff::makePeakFilter (osRate, lmf, 2.6f, juce::Decibels::decibelsToGain (lmg));
-        const auto hmc = Coeff::makePeakFilter (osRate, hmf, 2.6f, juce::Decibels::decibelsToGain (hmg));
-        const auto hc = Coeff::makeHighShelf  (osRate, highF[hfIdx], 0.60f, juce::Decibels::decibelsToGain (hg));
-        for (auto& f : highPass)  f.coefficients = pc;
-        for (auto& f : lowShelf)  f.coefficients = lc;
-        for (auto& f : lowMid)    f.coefficients = lmc;
-        for (auto& f : highMid)   f.coefficients = hmc;
-        for (auto& f : highShelf) f.coefficients = hc;
+        using ArrayCoeff = juce::dsp::IIR::ArrayCoefficients<float>;
+        const auto pc = ArrayCoeff::makeHighPass   (osRate, hpF[hpIdx]);
+        const auto lc = ArrayCoeff::makeLowShelf   (osRate, lowF[lfIdx], 0.68f, juce::Decibels::decibelsToGain (lg));
+        const auto lmc = ArrayCoeff::makePeakFilter (osRate, lmf, 2.6f, juce::Decibels::decibelsToGain (lmg));
+        const auto hmc = ArrayCoeff::makePeakFilter (osRate, hmf, 2.6f, juce::Decibels::decibelsToGain (hmg));
+        const auto hc = ArrayCoeff::makeHighShelf  (osRate, highF[hfIdx], 0.60f, juce::Decibels::decibelsToGain (hg));
+        for (auto& f : highPass)  *f.coefficients = pc;
+        for (auto& f : lowShelf)  *f.coefficients = lc;
+        for (auto& f : lowMid)    *f.coefficients = lmc;
+        for (auto& f : highMid)   *f.coefficients = hmc;
+        for (auto& f : highShelf) *f.coefficients = hc;
     }
 
-    const float blockRMS = buffer.getRMSLevel (0, 0, buffer.getNumSamples());
+    float blockRMS = 0.0f;
+    for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+        blockRMS = std::max (blockRMS, buffer.getRMSLevel (ch, 0, buffer.getNumSamples()));
     silentEnv = silentEnv * 0.9 + blockRMS * 0.1;
     const bool skipNonlinear = adaptiveOn && silentEnv < 1e-6;
 
@@ -160,8 +172,12 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
     const bool godPlus = qIdx == 3;
     const bool air32k = hfIdx == 3 && hg > 0.05f;
 
-    auto drives = std::vector<float> ((size_t) N);
-    for (int i = 0; i < N; ++i) drives[i] = driveSm.getNextValue();
+    bool sourceSilent[2] { true, true };
+    for (int ch = 0; ch < std::min (buffer.getNumChannels(), 2); ++ch)
+        sourceSilent[ch] = buffer.getRMSLevel (ch, 0, buffer.getNumSamples()) == 0.0f;
+
+    jassert (static_cast<size_t> (N) <= driveScratch.size());
+    for (int i = 0; i < N; ++i) driveScratch[static_cast<size_t> (i)] = driveSm.getNextValue();
 
     if (! skipNonlinear)
     {
@@ -170,9 +186,9 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
             auto* d = osBlock.getChannelPointer (ch);
             for (int i = 0; i < N; ++i)
             {
-                float x = d[i] * (1.f + drives[i] * 0.11f);
+                float x = d[i] * (1.f + driveScratch[static_cast<size_t> (i)] * 0.11f);
 
-                x = tanh[ch].process (x * 0.46f) * 2.17f;
+                x = inputTanh[ch].process (x * 0.46f) * 2.17f;
                 x = classA[ch].process (x);                 // Class-A + DA memory + sag/thermal
                 if (hpIdx != 0) x = highPass[ch].processSample (x);
 
@@ -184,7 +200,7 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 if (godPlus)
                     x = triode[ch].process (x * 0.14f) * 6.4f + x * 0.08f;
                 else
-                    x = tanh[ch].process (x * 0.09f) * 10.1f + x * 0.08f;
+                    x = interstageTanh[ch].process (x * 0.09f) * 10.1f + x * 0.08f;
 
                 x = highMid[ch].processSample (x);
                 x = highShelf[ch].processSample (x);
@@ -192,7 +208,7 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
                 if (air32k)
                 {
                     // 32k "liquid air": separate Class-A melt path
-                    float melt = tanh[ch].process (x * (0.78f + hg * 0.03f));
+                    float melt = airTanh[ch].process (x * (0.78f + hg * 0.03f));
                     melt = meltA[ch].process (melt * 0.55f) * 1.8f;
                     if (godPlus) melt = triode[ch].process (melt * 0.35f) * 1.2f + melt * 0.4f;
                     x = melt * 0.88f + x * 0.12f;
@@ -207,6 +223,10 @@ void Avalon737Processor::processBlock (juce::AudioBuffer<float>& buffer, juce::M
 
     osm.current().processSamplesDown (block);
     outGainSm.applyGain (buffer, buffer.getNumSamples());
+
+    for (int ch = 0; ch < numCh; ++ch)
+        if (sourceSilent[ch])
+            buffer.clear (ch, 0, buffer.getNumSamples());
 }
 
 void Avalon737Processor::getStateInformation (juce::MemoryBlock& dest)
