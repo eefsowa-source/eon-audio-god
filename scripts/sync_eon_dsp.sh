@@ -25,7 +25,7 @@ if ! source_head=$(git -C "$source_root" rev-parse --verify 'HEAD^{commit}'); th
     exit 1
 fi
 
-required_headers="Adaa.h Measure.h Oversampling.h Rng.h RtGuard.h Solvers.h Stages.h Transformer.h Triode.h Wdf.h Zdf.h"
+required_headers="Adaa.h Measure.h Oversampling.h Rate.h Rng.h RtGuard.h Solvers.h Stages.h Transformer.h Triode.h Wdf.h Zdf.h"
 for header in $required_headers; do
     object_spec="$source_head:Dsp/$header"
     if ! object_type=$(git -C "$source_root" cat-file -t "$object_spec" 2>/dev/null) ||
@@ -94,9 +94,18 @@ fi
 
 mkdir -p "$stage_dir/Dsp"
 
-for header in $required_headers; do
-    git -C "$source_root" cat-file blob "$source_head:Dsp/$header" > "$stage_dir/Dsp/$header"
-done
+# Copy every header the source tree carries, not only the ones named above.
+# The list above is a floor — it catches a source tree that is missing
+# something the snapshot needs — but a header *added* upstream has to flow
+# through on its own. Rate.h arrived in v0.1.7 while the list still ended at
+# Zdf.h, and the result was a snapshot whose Stages.h and Transformer.h both
+# included a file that had not been copied, so nothing compiled.
+git -C "$source_root" ls-tree --name-only "$source_head" Dsp/ \
+    | while IFS= read -r path; do
+        case "$path" in
+            *.h) git -C "$source_root" cat-file blob "$source_head:$path" > "$stage_dir/$path" ;;
+        esac
+      done
 git -C "$source_root" cat-file blob "$source_head:NOTES.md" > "$stage_dir/NOTES.md"
 printf '%s\n' "$source_head" > "$stage_dir/REVISION"
 
