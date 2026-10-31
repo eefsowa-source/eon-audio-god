@@ -96,6 +96,14 @@ if(EON_BUILD_TESTS)
     add_executable(eq_response_dump Docs/eq_response_dump.cpp)
     target_include_directories(eq_response_dump PRIVATE ${EON_DSP_DIR})
     target_link_libraries(eq_response_dump PRIVATE juce::juce_dsp)
+    # Same networking opt-outs the plugin targets get in add_eon_god(). This
+    # target is not a juce_add_* target, so it compiles juce_core itself and
+    # would otherwise pull juce_Network_curl.cpp in — which needs libcurl to
+    # link on Linux for a dumper that only writes CSV offline.
+    target_compile_definitions(eq_response_dump PRIVATE
+        JUCE_WEB_BROWSER=0
+        JUCE_USE_CURL=0
+    )
     if(NOT MSVC)
         target_compile_options(eq_response_dump PRIVATE -O2)
     endif()
