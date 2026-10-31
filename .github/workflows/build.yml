@@ -1,0 +1,108 @@
+name: build
+
+# This repo had no workflow at all, which is how a snapshot re-sync that does
+# not compile reached a branch: scripts/sync_eon_dsp.sh reported success while
+# leaving Stages.h and Transformer.h including a header it had never copied.
+# Nothing here would have caught that except a build.
+#
+# Pull requests cover branch work; the push trigger is narrowed to main so a
+# branch with an open PR is not built twice for the same commit.
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Both platforms always report. A failure on one is a result, not a
+      # reason to cancel the other.
+      fail-fast: false
+      matrix:
+        include:
+          - { name: linux-gcc,   os: ubuntu-24.04 }
+          - { name: macos-clang, os: macos-14 }
+
+    steps:
+      # recursive matters: JUCE is a submodule, and a plain checkout leaves the
+      # directory empty so configure fails on a missing JUCE/CMakeLists.txt.
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # Two of these are easy to miss and only bite at compile time:
+      #  - fontconfig: JUCE probes freetype2 and fontconfig in a single
+      #    pkg-config call, so a missing fontconfig drops the freetype include
+      #    path too and juceaide fails on ft2build.h.
+      #  - libxi: juce_gui_basics includes X11/extensions/XInput2.h outright.
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxcomposite-dev libxext-dev libxi-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Install macOS dependencies
+        if: runner.os == 'macOS'
+        run: brew install ninja
+
+      - name: Configure
+        run: >
+          cmake -S . -B build -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DEON_BUILD_TESTS=ON
+          -DEON_BUILD_PLUGINS=ON
+
+      - name: Build
+        run: cmake --build build
+
+      - name: Test
+        run: ctest --test-dir build --output-on-failure
+
+  # The repo already has EON_ENABLE_SANITIZERS, so this uses it rather than
+  # repeating the flags here — if the option ever changes, this job follows.
+  #
+  # Plugins are OFF on purpose. EON_ENABLE_SANITIZERS currently adds the
+  # -fsanitize compile flags but not the matching link flags, so the JUCE
+  # targets fail to link with undefined ___asan_* symbols (verified locally:
+  # "ld: symbol(s) not found for architecture arm64", every one of them
+  # ___asan_*). The plugin targets are therefore not covered by a sanitizer
+  # until that is fixed — that is a gap in this job, not a reason to skip it:
+  # the DSP core is where the loop and index arithmetic lives.
+  #
+  # Linux only, to keep this to one extra build rather than two.
+  sanitizer:
+    name: linux-sanitizers
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq ninja-build \
+            libasound2-dev libfreetype-dev libfontconfig1-dev \
+            libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev \
+            libxcomposite-dev libxext-dev libxi-dev libxrender-dev \
+            libglu1-mesa-dev mesa-common-dev
+
+      - name: Configure
+        run: >
+          cmake -S . -B build-san -G Ninja
+          -DCMAKE_BUILD_TYPE=RelWithDebInfo
+          -DEON_BUILD_TESTS=ON
+          -DEON_BUILD_PLUGINS=OFF
+          -DEON_ENABLE_SANITIZERS=ON
+
+      - name: Build
+        run: cmake --build build-san
+
+      - name: Test
+        run: ctest --test-dir build-san --output-on-failure
