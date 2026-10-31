@@ -67,13 +67,20 @@ jobs:
   # The repo already has EON_ENABLE_SANITIZERS, so this uses it rather than
   # repeating the flags here — if the option ever changes, this job follows.
   #
-  # Plugins are OFF on purpose. EON_ENABLE_SANITIZERS currently adds the
-  # -fsanitize compile flags but not the matching link flags, so the JUCE
-  # targets fail to link with undefined ___asan_* symbols (verified locally:
-  # "ld: symbol(s) not found for architecture arm64", every one of them
-  # ___asan_*). The plugin targets are therefore not covered by a sanitizer
-  # until that is fixed — that is a gap in this job, not a reason to skip it:
-  # the DSP core is where the loop and index arithmetic lives.
+  # Plugins are OFF on purpose. add_eon_god() applies -fsanitize to both
+  # compile and link for the plugin target itself, but juce_add_plugin() then
+  # creates the Standalone / AU / VST3 wrapper targets, and those link the
+  # sanitized SharedCode archive without the sanitizer runtime:
+  #
+  #   ld: symbol(s) not found for architecture arm64
+  #     "___asan_after_dynamic_init", referenced from: ...
+  #     "___asan_memcpy", referenced from: ...
+  #
+  # Verified locally on this branch, so it is not a CI-environment quirk. The
+  # fix is to propagate the link options to the wrapper targets; until then
+  # the plugin targets are not sanitizer-covered, which is a gap in this job
+  # rather than a reason to skip it — the DSP core is where the index
+  # arithmetic lives, and that part does build and pass under ASan+UBSan.
   #
   # Linux only, to keep this to one extra build rather than two.
   sanitizer:
