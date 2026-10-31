@@ -108,8 +108,13 @@ jobs:
           -DEON_BUILD_PLUGINS=OFF
           -DEON_ENABLE_SANITIZERS=ON
 
+      # Only the smoke test target, not a full build. EON_BUILD_TESTS also
+      # creates eq_response_dump, which links juce::juce_dsp, so `cmake --build`
+      # compiles all of JUCE under the sanitizer and takes over half an hour.
+      # Building the one target is ~30s and covers the DSP core, which is where
+      # the index arithmetic lives — the reason this job exists.
       - name: Build
-        run: cmake --build build-san
+        run: cmake --build build-san --target dsp_smoke_test
 
       - name: Test
-        run: ctest --test-dir build-san --output-on-failure
+        run: ctest --test-dir build-san -R dsp_smoke --output-on-failure
